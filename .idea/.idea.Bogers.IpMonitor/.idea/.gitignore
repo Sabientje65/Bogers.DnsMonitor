@@ -1,0 +1,6 @@
+# IDE artifacts
+.idea/
+
+# Build artifacts
+bin/
+obj/
