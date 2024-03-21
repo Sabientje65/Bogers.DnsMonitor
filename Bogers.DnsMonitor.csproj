@@ -4,7 +4,7 @@
         <TargetFramework>net8.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
-        <UserSecretsId>dotnet-Bogers.IpMonitor-A7DAE274-8706-4416-9F15-4E69D79E03AA</UserSecretsId>
+        <UserSecretsId>dotnet-Bogers.DnsMonitor-A7DAE274-8706-4416-9F15-4E69D79E03AA</UserSecretsId>
     </PropertyGroup>
 
     <ItemGroup>

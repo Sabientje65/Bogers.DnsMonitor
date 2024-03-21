@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bogers.IpMonitor", "Bogers.IpMonitor.csproj", "{B59083DD-9D9A-46CB-A962-0EA45EDD0F9C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bogers.DnsMonitor", "Bogers.DnsMonitor.csproj", "{B59083DD-9D9A-46CB-A962-0EA45EDD0F9C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
