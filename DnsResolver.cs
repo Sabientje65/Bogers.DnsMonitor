@@ -16,6 +16,10 @@ public class DnsResolver
         var id = new byte[2];
         Random.Shared.NextBytes(id);
 
+        BitMask.ReadNybble(0b1111_0001, 3);
+        BitMask.ReadNybble(0b1000_1111, 7);
+        BitMask.ReadNybble(0b1100_0111, 6);
+
         // using var sock = new Socket(SocketType.Dgram, ProtocolType.Udp);
         var cloudflare = new IPEndPoint(new IPAddress(cloudflareIp), 53);
         var myRouter = new IPEndPoint(new IPAddress(myRouterIp), 53);
@@ -24,6 +28,7 @@ public class DnsResolver
         udp.Connect(myRouter);
         
         // Dns.GetHostEntry()
+        
 
         var msg = new byte[]
         {
@@ -103,55 +108,155 @@ public class DnsResolver
             // type (2 bytes), 1 -> A
             0000_0000,
             0000_0001,
-            // (byte)'A',
 
             // class (2 bytes), 1 -> Internet
             0000_0000,
             0000_0001,
-            // (byte)'I',
-            // (byte)'N',
-
+            
             // end question
         };
 
-        // msg = new byte[]
-        // {
-        //     0xAB, 0xCA,
-        //     0x01, 0x00,
-        //     0x00, 0x01,
-        //     0x00, 0x00,
-        //     0x00, 0x00,
-        //     0x00, 0x00,
-        //     
-        //     0x07, 0x65, // - 'example' has length 7, e
-        //     0x78, 0x61, // - x, a
-        //     0x6D, 0x70, // - m, p
-        //     0x6C, 0x65, // - l, e
-        //     0x03, 0x63, // - 'com' has length 3, c
-        //     0x6F, 0x6D, // - o, m
-        //     0x00, //   - zero byte to end the QNAME
-        //     0x00, 0x01, // - QTYPE
-        //     0x00, 0x01, // - QCLASS
-        // };
-        var bytesSend = await udp.SendAsync(msg);
+        var bytes = new List<byte>(new Headers {
+            Id = (ushort)((id[0] << 8) | id[1]),
+            QuestionCount = 1,
+            OpCode = 0
+        }.Serialize());
+        
+        bytes.AddRange(new byte[]
+        {
+            // (tld -> online = 6 bytes)
+            // multiple levels are supported: eg. bogers.online -> bogers = 6 bytes, online = 6 bytes
+            // length (1 byte)
+            0x06,
+            (byte)'o',
+            (byte)'n',
+            (byte)'l',
+            (byte)'i',
+            (byte)'n',
+            (byte)'e',
+            
+            // terminate with 0 byte
+            0x00,
+            // (byte)'.',
+
+            // type (2 bytes), 1 -> A
+            0000_0000,
+            0000_0001,
+
+            // class (2 bytes), 1 -> Internet
+            0000_0000,
+            0000_0001,
+        });
+        
+
+        var bytesSend = await udp.SendAsync(bytes.ToArray());
         
         var result = await udp.ReceiveAsync();
-        var b1 = result.Buffer[2];
-        var b2 = result.Buffer[3];
-        var response = new
-        {
-            IsResponse = BitMask.IsSet(b1, 7),
-            OpCode = BitMask.ReadNybble(b1, 6),
-            AuthoritiveAnswer = BitMask.IsSet(b1, 2),
-            IsTruncated = BitMask.IsSet(b1, 1),
-            RecursionDesired = BitMask.IsSet(b1, 0),
-            
-            RecursionAvailable = BitMask.IsSet(b2, 7),
-            ResultCode = BitMask.ReadNybble(b2, 3),
-        };
+        var response = Headers.Deserialize(result.Buffer);
+        
+        // var b1 = result.Buffer[2];
+        // var b2 = result.Buffer[3];
+        
+        
+        // var response = new
+        // {
+        //     IsResponse = BitMask.IsSet(b1, 7),
+        //     OpCode = BitMask.ReadNybble(b1, 6),
+        //     AuthoritiveAnswer = BitMask.IsSet(b1, 2),
+        //     IsTruncated = BitMask.IsSet(b1, 1),
+        //     RecursionDesired = BitMask.IsSet(b1, 0),
+        //     
+        //     RecursionAvailable = BitMask.IsSet(b2, 7),
+        //     ResultCode = BitMask.ReadNybble(b2, 3),
+        // };
         
         var hexResult = BitConverter.ToString(result.Buffer).Replace("-", "");
     }
+
+}
+
+// [StructLayout(LayoutKind.Sequential)]
+struct Headers
+{
+    public ushort Id;
+
+    public bool IsResponse;
+
+    public byte OpCode;
+
+    public bool IsAuthoritativeAnswer;
+
+    public bool IsTruncated;
+
+    public bool RecursionDesired;
+    
+    public bool RecursionAvailable;
+
+    public byte ResponseCode;
+
+    public ushort QuestionCount;
+
+    public ushort ResourceRecordCount;
+
+    public ushort NameServerResourceRecordCount;
+
+    public ushort AdditionalRecordCount;
+
+    /// <summary>
+    /// Serialize to resource record header format
+    /// </summary>
+    /// <returns>Headers serialized as byte array</returns>
+    public byte[] Serialize()
+    {
+        var serialized = new byte[12];
+        serialized[0] = BitMask.ReadOctet(Id, 1);
+        serialized[1] = BitMask.ReadOctet(Id, 0);
+        if (IsResponse) serialized[2] |= 0b_1_0000000;
+        serialized[2] |= (byte)(BitMask.ReadNybble(OpCode, 3) << 3);
+        if (IsAuthoritativeAnswer) serialized[2] |= 00000_1_00;
+        if (IsTruncated) serialized[2] |= 000000_1_0;
+        if (RecursionDesired) serialized[2] |= 000000_1;
+
+        if (RecursionAvailable) serialized[3] |= 0b_1_0000000;
+        serialized[3] |= (BitMask.ReadNybble(ResponseCode, 3));
+        
+        // QDCOUNT
+        serialized[4] = BitMask.ReadOctet(QuestionCount, 1);
+        serialized[5] = BitMask.ReadOctet(QuestionCount, 0);
+
+        // ANCOUNT
+        serialized[6] = BitMask.ReadOctet(ResourceRecordCount, 1);
+        serialized[7] = BitMask.ReadOctet(ResourceRecordCount, 0);
+        
+        // NSCOUNT
+        serialized[8] = BitMask.ReadOctet(NameServerResourceRecordCount, 1);
+        serialized[9] = BitMask.ReadOctet(NameServerResourceRecordCount, 0);
+        
+        // ARCOUNT
+        serialized[10] = BitMask.ReadOctet(AdditionalRecordCount, 1);
+        serialized[11] = BitMask.ReadOctet(AdditionalRecordCount, 0);
+
+        return serialized;
+    }
+
+    public static Headers Deserialize(byte[] data) => new Headers
+    {
+        Id = (byte)(data[0] << 8 | data[1]),
+        
+        IsResponse = BitMask.IsSet(data[2], 7),
+        OpCode = BitMask.ReadNybble(data[2], 6),
+        IsAuthoritativeAnswer = BitMask.IsSet(data[2], 2),
+        IsTruncated = BitMask.IsSet(data[2], 1),
+        RecursionDesired = BitMask.IsSet(data[2], 0),
+        
+        RecursionAvailable = BitMask.IsSet(data[3], 7),
+        ResponseCode = BitMask.ReadNybble(data[3], 3),
+        
+        QuestionCount = (byte)(data[4] << 8 | data[5]),
+        ResourceRecordCount = (byte)(data[6] << 8 | data[7]),
+        NameServerResourceRecordCount = (byte)(data[8] << 8 | data[9]),
+        AdditionalRecordCount = (byte)(data[10] << 8 | data[11]),
+    };
 }
 
 static class BitMask
@@ -233,15 +338,19 @@ static class BitMask
     /// <param name="octet">Octet position</param>
     /// <returns>Octet at given position</returns>
     public static byte ReadOctet(short value, int octet) => (byte)(value >> (octet * 8));
-
+    
     /// <summary>
-    /// Read the byte octet at the given position
+    /// Read the nybble at the given position
     /// </summary>
     /// <param name="value">8 bit integer</param>
     /// <param name="startAt">Starting bit index</param>
     /// <returns>Nybble at given position</returns>
     public static byte ReadNybble(byte value, int startAt)
     {
+        // value: 1111_0001 -> startAt(3) -> 0001 => 0000_0001
+        // value: 1000_1111 -> startAt(7) -> 1000 1000_0000 -> 0000_1000
+        // value: 1100_1111 -> startAt(6) -> 1000 1100_0000 -> 0000_0100
+        
         byte r = 0;
         if (IsSet(value, startAt)) r |= 0b1000;
         if (IsSet(value, startAt - 1)) r |= 0b0100;
