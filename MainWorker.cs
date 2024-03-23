@@ -1,10 +1,13 @@
-namespace Bogers.IpMonitor;
+namespace Bogers.DnsMonitor;
 
-public class Worker : BackgroundService
+/// <summary>
+/// Main worker, single entrypoint for performing monitoring on DNS records
+/// </summary>
+public class MainWorker : BackgroundService
 {
-    private readonly ILogger<Worker> _logger;
+    private readonly ILogger<MainWorker> _logger;
 
-    public Worker(ILogger<Worker> logger)
+    public MainWorker(ILogger<MainWorker> logger)
     {
         _logger = logger;
     }
@@ -22,3 +25,9 @@ public class Worker : BackgroundService
         }
     }
 }
+
+// public record RecordChangesEvent(string Value, string )
+// {
+//     
+//     
+// }

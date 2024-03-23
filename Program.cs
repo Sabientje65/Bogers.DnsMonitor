@@ -1,7 +1,9 @@
-using Bogers.IpMonitor;
+using Bogers.DnsMonitor;
 
-var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddHostedService<Worker>();
+await DnsResolver.QueryResourceRecords("bogers.online");
 
-var host = builder.Build();
-host.Run();
+// var builder = Host.CreateApplicationBuilder(args);
+// builder.Services.AddHostedService<MainWorker>();
+//
+// var host = builder.Build();
+// host.Run();
