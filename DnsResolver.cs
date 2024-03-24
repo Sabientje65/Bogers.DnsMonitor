@@ -2,6 +2,7 @@
 using System.Net.Sockets;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Bogers.DnsMonitor;
 
@@ -153,6 +154,14 @@ public class DnsResolver
         
         var result = await udp.ReceiveAsync();
         var response = Headers.Deserialize(result.Buffer);
+
+
+        // todo: make span
+        var answer = result.Buffer
+            .Skip(12)
+            .ToArray();
+
+        var answ = Question.Deserialize(answer, 0);
         
         // var b1 = result.Buffer[2];
         // var b2 = result.Buffer[3];
@@ -173,6 +182,51 @@ public class DnsResolver
         var hexResult = BitConverter.ToString(result.Buffer).Replace("-", "");
     }
 
+}
+
+struct Question
+{
+    public string Name;
+
+    public short QuestionType;
+
+    public short QuestionClass;
+
+    public byte[] Serialize()
+    {
+        var response = new byte[
+            // Name length
+            1 + 
+            // Name itself
+            Name.Length +
+            // Question type
+            2 + 
+            // Question class
+            2
+        ];
+
+        var idx = 0;
+        response[idx++] = (byte)Name.Length;
+        for (var nIdx = 0; nIdx < Name.Length; nIdx++) response[idx++] = (byte)Name[nIdx++];
+        response[idx++] = BitMask.ReadOctet(QuestionType, 1);
+        response[idx++] = BitMask.ReadOctet(QuestionType, 0);
+        response[idx++] = BitMask.ReadOctet(QuestionClass, 1);
+        response[idx] = BitMask.ReadOctet(QuestionClass, 0);
+        
+        return response;
+    }
+
+    public static Question Deserialize(byte[] src, int idx)
+    {
+        var nameLength = src[idx++];
+        
+        return new Question
+        {
+            Name = Encoding.ASCII.GetString(src, idx, nameLength),
+            QuestionType = (byte)(src[idx + 1 + nameLength] << 8 | src[idx + 1 + nameLength + 1]),
+            QuestionClass = (byte)(src[idx + 1 + nameLength] << 8 | src[idx + 1 + nameLength + 1]),
+        };
+    }
 }
 
 // [StructLayout(LayoutKind.Sequential)]
