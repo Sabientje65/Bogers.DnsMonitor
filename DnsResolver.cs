@@ -10,7 +10,7 @@ public class DnsResolver
     public static async Task QueryResourceRecords(string host)
     {
         // 1.1.1.1, cloudflare dns, 00000001_00000001_00000001_00000001
-        long myRouterIp = ((long)192 << 0 | ((long)168 << 8) | ((long)1 << 16) | ((long)1 << 24)); // little endian
+        long myRouterIp = ((long)192 << 0 | ((long)168 << 8) | ((long)1 << 16) | ((long)1 << 24));
         long cloudflareIp = ((byte)1 << 0) | ((byte)1 << 8) | ((byte)1 << 16) | ((byte)1 << 24);
         
         var id = new byte[2];
