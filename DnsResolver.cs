@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -8,6 +9,23 @@ namespace Bogers.DnsMonitor;
 
 public class DnsResolver
 {
+    private static class RootNameServer
+    {
+        public static readonly long A = ((long)198 << 0) | ((long)41 << 8)  | ((long)0 << 16)   | ((long)4 << 24);
+        public static readonly long B = ((long)170 << 0) | ((long)247 << 8) | ((long)170 << 16) | ((long)2 << 24);
+        public static readonly long C = ((long)192 << 0) | ((long)33 << 8)  | ((long)4 << 16)   | ((long)12 << 24);
+        public static readonly long D = ((long)199 << 0) | ((long)7 << 8)   | ((long)91 << 16)  | ((long)13 << 24);
+        public static readonly long E = ((long)192 << 0) | ((long)203 << 8) | ((long)230 << 16) | ((long)10 << 24);
+        public static readonly long F = ((long)192 << 0) | ((long)5 << 8)   | ((long)5 << 16)   | ((long)241 << 24);
+        public static readonly long G = ((long)192 << 0) | ((long)112 << 8) | ((long)36 << 16)  | ((long)4 << 24);
+        public static readonly long H = ((long)198 << 0) | ((long)97 << 8)  | ((long)190 << 16) | ((long)53 << 24);
+        public static readonly long I = ((long)192 << 0) | ((long)36 << 8)  | ((long)148 << 16) | ((long)17 << 24);
+        public static readonly long J = ((long)192 << 0) | ((long)58 << 8)  | ((long)128 << 16) | ((long)30 << 24);
+        public static readonly long K = ((long)193 << 0) | ((long)0 << 8)   | ((long)14 << 16)  | ((long)129 << 24);
+        public static readonly long L = ((long)199 << 0) | ((long)7 << 8)   | ((long)83 << 16)  | ((long)42 << 24);
+        public static readonly long M = ((long)202 << 0) | ((long)12 << 8)  | ((long)27 << 16)  | ((long)33 << 24);
+    }
+    
     public static async Task QueryResourceRecords(string host)
     {
         // 1.1.1.1, cloudflare dns, 00000001_00000001_00000001_00000001
@@ -24,161 +42,40 @@ public class DnsResolver
         // using var sock = new Socket(SocketType.Dgram, ProtocolType.Udp);
         var cloudflare = new IPEndPoint(new IPAddress(cloudflareIp), 53);
         var myRouter = new IPEndPoint(new IPAddress(myRouterIp), 53);
+        var root = new IPEndPoint(new IPAddress(RootNameServer.A), 53);
         
         using var udp = new UdpClient(AddressFamily.InterNetwork);
-        udp.Connect(myRouter);
-        
-        // Dns.GetHostEntry()
-        
-
-        var msg = new byte[]
-        {
-            // begin header (12 bytes)
-
-            // id
-            id[0],
-            id[1],
-
-            // should move this into a struct, lol
-            (
-                0000_0000
-
-                // query (1 bit)
-                | 0b_0_0000000
-
-                // opcode (4 bits)
-                | 0_0000_000
-
-                // Authoritative Answer (1 bit)
-                | 00000_0_00
-
-                // TrunCation (1 bit), should use TCP when set to 1
-                | 000000_0_0
-
-                // Recursion Desired (1 bit), tell NS to query recursively
-                | 000000_0
-            ),
-            (
-                0000_0000
-
-                // Recursion Available (1 bit), set by response, determines if recursion is available or not
-                | 0b_0_0000000
-
-                // Z (3 bits), reserved for future use, MUST be empty
-                | 0_000_0000
-
-                // Response code (4 bits)
-                | 0_000_0000
-            ),
-
-            // Question count (16 bits), amount of questions in question section
-            0000_0000,
-            0000_0001,
-
-            // Answer count (16 bits), amount of answers in answer section, not relevant for querying
-            0000_0000,
-            0000_0000,
-
-            // NSCount (16 bits), amount of ns server records, not relevant for querying
-            0000_0000,
-            0000_0000,
-
-            // ARCount (16 bits), additional records count, not relevant for querying
-            0000_0000,
-            0000_0000,
-
-            // end header
-
-            // begin question (dynamic length)
-
-            // (tld -> online = 6 bytes)
-            // multiple levels are supported: eg. bogers.online -> bogers = 6 bytes, online = 6 bytes
-            // length (1 byte)
-            0x06,
-            (byte)'o',
-            (byte)'n',
-            (byte)'l',
-            (byte)'i',
-            (byte)'n',
-            (byte)'e',
-            
-            // terminate with 0 byte
-            0x00,
-            // (byte)'.',
-
-            // type (2 bytes), 1 -> A
-            0000_0000,
-            0000_0001,
-
-            // class (2 bytes), 1 -> Internet
-            0000_0000,
-            0000_0001,
-            
-            // end question
-        };
-
+        udp.Connect(root);
+ 
         var bytes = new List<byte>(new Headers {
             Id = (ushort)((id[0] << 8) | id[1]),
             QuestionCount = 1,
             OpCode = 0
         }.Serialize());
         
-        bytes.AddRange(new byte[]
+        bytes.AddRange(new Question
         {
-            // (tld -> online = 6 bytes)
-            // multiple levels are supported: eg. bogers.online -> bogers = 6 bytes, online = 6 bytes
-            // length (1 byte)
-            0x06,
-            (byte)'o',
-            (byte)'n',
-            (byte)'l',
-            (byte)'i',
-            (byte)'n',
-            (byte)'e',
-            
-            // terminate with 0 byte
-            0x00,
-            // (byte)'.',
-
-            // type (2 bytes), 1 -> A
-            0000_0000,
-            0000_0001,
-
-            // class (2 bytes), 1 -> Internet
-            0000_0000,
-            0000_0001,
-        });
+            Name = "online",
+            QuestionClass = 1, // A
+            QuestionType = 1 // IN
+        }.Serialize());
         
 
         var bytesSend = await udp.SendAsync(bytes.ToArray());
         
         var result = await udp.ReceiveAsync();
-        var response = Headers.Deserialize(result.Buffer);
-
 
         // todo: make span
-        var answer = result.Buffer
-            .Skip(12)
-            .ToArray();
+        var resultBuffer = result.Buffer;
 
-        var answ = Question.Deserialize(answer, 0);
-        
-        // var b1 = result.Buffer[2];
-        // var b2 = result.Buffer[3];
-        
-        
-        // var response = new
-        // {
-        //     IsResponse = BitMask.IsSet(b1, 7),
-        //     OpCode = BitMask.ReadNybble(b1, 6),
-        //     AuthoritiveAnswer = BitMask.IsSet(b1, 2),
-        //     IsTruncated = BitMask.IsSet(b1, 1),
-        //     RecursionDesired = BitMask.IsSet(b1, 0),
-        //     
-        //     RecursionAvailable = BitMask.IsSet(b2, 7),
-        //     ResultCode = BitMask.ReadNybble(b2, 3),
-        // };
-        
+        var response = Headers.Deserialize(resultBuffer);
+        var question = Question.Deserialize(resultBuffer, 12);
+        var idx = 12 + question.Serialize().Length;
+        var resourceRecords = new ResourceRecord[response.NameServerResourceRecordCount];
+        var additionalRecords = new ResourceRecord[response.AdditionalRecordCount];
+        for (var rrIdx = 0; rrIdx < resourceRecords.Length; rrIdx++) resourceRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+        for (var rrIdx = 0; rrIdx < additionalRecords.Length; rrIdx++) additionalRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+
         var hexResult = BitConverter.ToString(result.Buffer).Replace("-", "");
     }
 
@@ -199,6 +96,8 @@ struct Question
             1 + 
             // Name itself
             Name.Length +
+            // Terminator byte
+            1 +
             // Question type
             2 + 
             // Question class
@@ -207,7 +106,8 @@ struct Question
 
         var idx = 0;
         response[idx++] = (byte)Name.Length;
-        for (var nIdx = 0; nIdx < Name.Length; nIdx++) response[idx++] = (byte)Name[nIdx++];
+        for (var nIdx = 0; nIdx < Name.Length; nIdx++) response[idx++] = (byte)Name[nIdx];
+        response[idx++] = 0x00;
         response[idx++] = BitMask.ReadOctet(QuestionType, 1);
         response[idx++] = BitMask.ReadOctet(QuestionType, 0);
         response[idx++] = BitMask.ReadOctet(QuestionClass, 1);
@@ -223,10 +123,152 @@ struct Question
         return new Question
         {
             Name = Encoding.ASCII.GetString(src, idx, nameLength),
-            QuestionType = (byte)(src[idx + 1 + nameLength] << 8 | src[idx + 1 + nameLength + 1]),
-            QuestionClass = (byte)(src[idx + 1 + nameLength] << 8 | src[idx + 1 + nameLength + 1]),
+            QuestionType = (short)(src[idx + 1 + nameLength] << 8 | src[idx + 2 + nameLength]),
+            QuestionClass = (short)(src[idx + 3 + nameLength] << 8 | src[idx + 4 + nameLength]),
         };
     }
+}
+
+struct ResourceRecord
+{
+    public string Name;
+    public short Type;
+    public short Class;
+    public int TimeToLive;
+    public string Data;
+
+    public static ResourceRecord Deserialize(byte[] src, ref int idx)
+    {
+        var name = ReadName(src, ref idx);
+        var type = (short)((src[idx++] << 8) | src[idx++]);
+        var @class = (short)((src[idx++] << 8) | src[idx++]);
+        var ttl = ((src[idx++] << 24) | (src[idx++] << 16) | (src[idx++] << 8) | (src[idx++]));
+        var data = type switch
+        {
+            // A record
+            1 => ReadHostAddress(src, ref idx),
+            
+            // AAAA record
+            28 => ReadHostAddress(src, ref idx),
+            
+            // NS record
+            2 => ReadNSName(src, ref idx),
+            _ => null
+        };
+
+        return new ResourceRecord
+        {
+            Name = name,
+            Type = type,
+            Class = @class,
+            TimeToLive = ttl,
+            Data = data
+        };
+    }
+
+    private static string ReadName(byte[] src, ref int idx)
+    {
+        var (label, length) = LabelUtils.ReadLabel(src, idx);
+        idx += length;
+        return label;
+    }
+
+    private readonly string ReadUnknownData(byte[] src, ref int idx)
+    {
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        idx += length;
+        return String.Empty;
+    }
+
+    private static string ReadHostAddress(byte[] src, ref int idx)
+    {
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        var ip = new IPAddress(src[idx..(idx + length)]);
+        idx += length;
+        return ip.ToString();
+    }
+    
+    private static string ReadNSName(byte[] src, ref int idx)
+    {
+        // when type = 2
+        
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        var label = LabelUtils.ReadLabel(src, idx, length);
+        idx += length;
+        return label;
+    }
+}
+
+// ILabel -> ConcreteLabel, OffsetLabel, LabelCollection, etc.
+// should make labels their own types after we're done prototyping
+public static class LabelUtils
+{
+
+    public static (string label, int length) ReadLabel(byte[] src, int idx)
+    {
+        var length = IsPointer(src[idx]) ? 2 : src[idx];
+        return (ReadLabel(src, idx, length), length);
+    }
+
+    public static string ReadLabel(byte[] src, int idx, int length)
+    {
+        var sb = new StringBuilder();
+        AppendLabel(sb, src, idx, length);
+        return sb.ToString();
+    }
+
+    private static void AppendLabel(StringBuilder sb, byte[] src, int idx, int length)
+    {
+        // just a pointer is a valid label
+        if (IsPointer(src[idx]))
+        {
+            AppendPointer(sb, src, idx);
+            return;
+        }
+
+        var sequenceLength =  length;
+        var sequenceEnd = idx + sequenceLength;
+        var wasPointer = false;
+        
+        // a sequence of labels of predefined length
+        while (idx < sequenceEnd)
+        {
+            wasPointer = false;
+            if (IsPointer(src[idx]))
+            {
+                wasPointer = true;
+                idx += AppendPointer(sb, src, idx);
+                continue;
+            }
+        
+            var labelLength = src[idx];
+            var labelStartIdx = idx + 1;
+            
+            sb.Append(Encoding.ASCII.GetString(src, labelStartIdx, labelLength));
+            sb.Append('.');
+            
+            idx += labelLength + 1;
+        }
+        
+        // sequences may end with a terminator or a pointer
+        if (!wasPointer && IsPointer(src[idx])) AppendPointer(sb, src, idx);
+    }
+
+    private static int AppendPointer(StringBuilder sb, byte[] src, int idx)
+    {
+        var offset = ReadPointerOffset(src, idx);
+        AppendLabel(sb, src, offset, src[offset]);
+
+        // pointers always have a length of 2 octets
+        return 2;
+    }
+    
+    private static bool IsPointer(byte b) => (b & 0b1100_0000) == 0b1100_0000;
+
+    private static short ReadPointerOffset(byte[] src, int idx) => (short)(((short)(src[idx] & 0b0011_1111) << 8) | (short)src[idx + 1]);
+    
+    private static bool IsTerminator(byte b) => b == 0b0000_0000;
+
 }
 
 // [StructLayout(LayoutKind.Sequential)]
