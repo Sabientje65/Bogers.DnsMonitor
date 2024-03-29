@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Collections;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
@@ -35,13 +36,13 @@ public class DnsResolver
         var id = new byte[2];
         Random.Shared.NextBytes(id);
 
-        BitMask.ReadNybble(0b1111_0001, 3);
-        BitMask.ReadNybble(0b1000_1111, 7);
-        BitMask.ReadNybble(0b1100_0111, 6);
+        // BitMask.ReadNybble(0b1111_0001, 3);
+        // BitMask.ReadNybble(0b1000_1111, 7);
+        // BitMask.ReadNybble(0b1100_0111, 6);
 
         // using var sock = new Socket(SocketType.Dgram, ProtocolType.Udp);
-        var cloudflare = new IPEndPoint(new IPAddress(cloudflareIp), 53);
-        var myRouter = new IPEndPoint(new IPAddress(myRouterIp), 53);
+        // var cloudflare = new IPEndPoint(new IPAddress(cloudflareIp), 53);
+        // var myRouter = new IPEndPoint(new IPAddress(myRouterIp), 53);
         var root = new IPEndPoint(new IPAddress(RootNameServer.A), 53);
         
         using var udp = new UdpClient(AddressFamily.InterNetwork);
@@ -60,25 +61,25 @@ public class DnsResolver
             QuestionType = 1 // IN
         }.Serialize());
         
-
-        var bytesSend = await udp.SendAsync(bytes.ToArray());
-        
+        await udp.SendAsync(bytes.ToArray());
         var result = await udp.ReceiveAsync();
 
-        // todo: make span
+        // todo: make span/memory<byte>
         var resultBuffer = result.Buffer;
 
         var response = Headers.Deserialize(resultBuffer);
         var question = Question.Deserialize(resultBuffer, 12);
         var idx = 12 + question.Serialize().Length;
-        var resourceRecords = new ResourceRecord[response.NameServerResourceRecordCount];
+        var resourceRecords = new ResourceRecord[response.ResourceRecordCount];
+        var nameServerRecords = new ResourceRecord[response.NameServerResourceRecordCount];
         var additionalRecords = new ResourceRecord[response.AdditionalRecordCount];
         for (var rrIdx = 0; rrIdx < resourceRecords.Length; rrIdx++) resourceRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+        for (var rrIdx = 0; rrIdx < nameServerRecords.Length; rrIdx++) nameServerRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
         for (var rrIdx = 0; rrIdx < additionalRecords.Length; rrIdx++) additionalRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
 
-        var hexResult = BitConverter.ToString(result.Buffer).Replace("-", "");
+        var res = 0;
     }
-
+    
 }
 
 struct Question
@@ -190,10 +191,8 @@ struct ResourceRecord
     
     private static string ReadNSName(byte[] src, ref int idx)
     {
-        // when type = 2
-        
         var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
-        var label = LabelUtils.ReadLabel(src, idx, length);
+        var (label, _) = LabelUtils.ReadLabel(src, idx);
         idx += length;
         return label;
     }
@@ -206,68 +205,39 @@ public static class LabelUtils
 
     public static (string label, int length) ReadLabel(byte[] src, int idx)
     {
-        var length = IsPointer(src[idx]) ? 2 : src[idx];
-        return (ReadLabel(src, idx, length), length);
-    }
-
-    public static string ReadLabel(byte[] src, int idx, int length)
-    {
+        var length = IsPointer(src, idx) ? 2 : src[idx];
         var sb = new StringBuilder();
-        AppendLabel(sb, src, idx, length);
-        return sb.ToString();
+        AppendLabels(sb, src, idx);
+        return (sb.ToString(), length);
     }
 
-    private static void AppendLabel(StringBuilder sb, byte[] src, int idx, int length)
+    private static void AppendLabels(StringBuilder sb, byte[] src, int idx)
     {
-        // just a pointer is a valid label
-        if (IsPointer(src[idx]))
+        // starts with pointer -> follow pointer to label
+        if (IsPointer(src, idx))
         {
-            AppendPointer(sb, src, idx);
+            AppendLabels(sb, src, src[idx + 1]);
             return;
         }
 
-        var sequenceLength =  length;
-        var sequenceEnd = idx + sequenceLength;
-        var wasPointer = false;
-        
-        // a sequence of labels of predefined length
-        while (idx < sequenceEnd)
+        // read until we're either terminated, or find a pointer to follow
+        while (
+            !IsTerminator(src, idx) &&
+            !IsPointer(src, idx)
+        )
         {
-            wasPointer = false;
-            if (IsPointer(src[idx]))
-            {
-                wasPointer = true;
-                idx += AppendPointer(sb, src, idx);
-                continue;
-            }
-        
-            var labelLength = src[idx];
-            var labelStartIdx = idx + 1;
-            
-            sb.Append(Encoding.ASCII.GetString(src, labelStartIdx, labelLength));
+            var length = src[idx];
+            sb.Append(Encoding.ASCII.GetString(src, idx + 1, length));
             sb.Append('.');
-            
-            idx += labelLength + 1;
+            idx += src[idx] + 1;
         }
         
-        // sequences may end with a terminator or a pointer
-        if (!wasPointer && IsPointer(src[idx])) AppendPointer(sb, src, idx);
-    }
-
-    private static int AppendPointer(StringBuilder sb, byte[] src, int idx)
-    {
-        var offset = ReadPointerOffset(src, idx);
-        AppendLabel(sb, src, offset, src[offset]);
-
-        // pointers always have a length of 2 octets
-        return 2;
+        // ends with a pointer -> follow pointer
+        if (IsPointer(src, idx)) AppendLabels(sb, src, src[idx + 1]);
     }
     
-    private static bool IsPointer(byte b) => (b & 0b1100_0000) == 0b1100_0000;
-
-    private static short ReadPointerOffset(byte[] src, int idx) => (short)(((short)(src[idx] & 0b0011_1111) << 8) | (short)src[idx + 1]);
-    
-    private static bool IsTerminator(byte b) => b == 0b0000_0000;
+    private static bool IsPointer(byte[] src, int idx) => (src[idx] & 0b1100_0000) == 0b1100_0000;
+    private static bool IsTerminator(byte[] src, int idx) => src[idx] == 0b0000_0000;
 
 }
 
@@ -514,60 +484,4 @@ static class BitMask
         if (value > (1 << 8)) return 2;
         return 1;
     }
-}
-
-/// <summary>
-/// Implementation of: https://datatracker.ietf.org/doc/html/rfc1035#autoid-40
-/// </summary>
-// public struct Header
-// {
-//     /// <summary>
-//     /// Unique request identifier, will be included in answers
-//     /// </summary>
-//     public ushort Id;
-//
-//     /// <summary>
-//     /// 0 for query, 1 for response
-//     /// </summary>
-//     public bool IsAnswer;
-//
-//     /// <summary>
-//     /// DNS opcode, can be one of the following values:
-//     /// 0    - Standard query (QUERY)
-//     /// 1    - Inverse query (IQUERY)
-//     /// 2    - Server status request (STATUS)
-//     /// 3-15 - Reserved for future use
-//     /// </summary>
-//     public Nybble Opcode;
-//
-//     public bool AuthoritativeAnswer;
-//     
-//     
-// }
-
-[StructLayout(LayoutKind.Sequential)]
-public struct Nybble
-{
-    public static implicit operator byte(Nybble n)
-    {
-        byte b = 0;
-        if (n.Bit1) b |= 0b_0001;
-        if (n.Bit2) b |= 0b_0010;
-        if (n.Bit3) b |= 0b_0100;
-        if (n.Bit4) b |= 0b_1000;
-        return b;
-    }
-
-    public static implicit operator Nybble(byte b) => new Nybble
-    {
-        Bit1 = (b & 0b_0001) == 1,
-        Bit2 = (b & 0b_0010) == 1,
-        Bit3 = (b & 0b_0100) == 1,
-        Bit4 = (b & 0b_1000) == 1,
-    };
-
-    public bool Bit1;
-    public bool Bit2;
-    public bool Bit3;
-    public bool Bit4;
 }
