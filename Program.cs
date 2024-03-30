@@ -1,4 +1,5 @@
 using Bogers.DnsMonitor;
+using Bogers.DnsMonitor.Dns;
 
 await DnsResolver.QueryResourceRecords("bogers.online");
 
