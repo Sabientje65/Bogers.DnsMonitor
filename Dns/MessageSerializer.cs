@@ -269,7 +269,7 @@ static class MessageSerializer
 /// <summary>
 /// Collection of utilities for reading/writing domain names from and to DNS messages
 /// </summary>
-public static class NameSerializer
+static class NameSerializer
 {
     
     // worth considering: having instances of our serializer -> tracking seen internally when serializing
