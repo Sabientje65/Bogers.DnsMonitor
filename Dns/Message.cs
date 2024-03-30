@@ -1,4 +1,7 @@
-﻿namespace Bogers.DnsMonitor.Dns;
+﻿using System.Diagnostics;
+using System.Text;
+
+namespace Bogers.DnsMonitor.Dns;
 
 /// <summary>
 /// DNS Message https://datatracker.ietf.org/doc/html/rfc1035#section-4
@@ -65,6 +68,7 @@ struct Message
 /// <summary>
 /// Object representation of a DNS message header https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1
 /// </summary>
+[DebuggerDisplay("{DebuggerDisplay()}")]
 struct Header
 {
     /// <summary>
@@ -126,11 +130,30 @@ struct Header
     /// Number of entries in message additional record count
     /// </summary>
     public ushort AdditionalRecordCount;
+
+    private string DebuggerDisplay()
+    {
+        var sb = new StringBuilder();
+        sb.Append($"Id: 0x{Id:X}, ");
+        sb.Append($"QR: {IsResponse}, ");
+        sb.Append($"OPCODE: 0x{OpCode:X}, ");
+        sb.Append($"AA: {IsAuthoritativeAnswer}, ");
+        sb.Append($"TC: {IsTruncated}, ");
+        sb.Append($"RD: {RecursionDesired}, ");
+        sb.Append($"RA: {RecursionAvailable}, ");
+        sb.Append($"RCODE: {ResponseCode}, ");
+        sb.Append($"QDCOUNT: 0x{QuestionCount:X}, ");
+        sb.Append($"ANCOUNT: 0x{AnswerCount:X}, ");
+        sb.Append($"NSCOUNT: 0x{NameServerCount:X}, ");
+        sb.Append($"ARCOUNT: 0x{AdditionalRecordCount:X}");
+        return sb.ToString();
+    }
 }
 
 /// <summary>
 /// DNS Question https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.2
 /// </summary>
+[DebuggerDisplay("Name: {Name}, Type: {QuestionType}")] // <-- QuestionType name?
 struct Question
 {
     public Question(string name, ushort questionType)
@@ -162,6 +185,7 @@ struct Question
 /// <summary>
 /// DNS Resource Record https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.2
 /// </summary>
+[DebuggerDisplay("Name: {Name}, Type: {Type}, TTL: {TimeToLive}, Data: {Data}")] // <-- QuestionType name?
 struct ResourceRecord
 {
     /// <summary>

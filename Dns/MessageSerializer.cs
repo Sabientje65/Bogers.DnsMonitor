@@ -282,22 +282,22 @@ static class NameSerializer
     /// <returns>Domain name</returns>
     public static string ReadName(byte[] src, ref int idx)
     {
-        int length;
-        
-        // pointer -> static length of 2
-        if (IsPointer(src, idx)) length = 2;
-        else
-        {
-            // sequence length + sequence content
-            length = src[idx] + 1;
-            
-            // sequences end with either a pointer (2 bytes) or a terminator (1 byte)
-            length += IsPointer(src, idx + length) ? 2 : 1;
-        }
-        
+        // first read our label, then retroactively move our index to accomodate the actual amount of bytes read
         var sb = new StringBuilder();
         AppendLabelSequence(sb, src, idx);
-        idx += length;
+        
+        // pointer -> static length of 2
+        if (IsPointer(src, idx)) idx += 2;
+        else
+        {
+            // Keep shifting index to end of sequence length indicator + sequence itself
+            // until we encounter one of two possible sequence terminators
+            while (!IsPointer(src, idx) && !IsTerminator(src, idx)) idx += src[idx] + 1;
+
+            // Shift past pointer/terminator
+            idx += IsPointer(src, idx) ? 2 : 1;
+        }
+        
         return sb.ToString();
     }
     
