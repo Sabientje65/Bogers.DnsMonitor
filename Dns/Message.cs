@@ -6,7 +6,7 @@ namespace Bogers.DnsMonitor.Dns;
 /// <summary>
 /// DNS Message https://datatracker.ietf.org/doc/html/rfc1035#section-4
 /// </summary>
-struct Message
+class Message
 {
     public Message()
     {
@@ -154,7 +154,7 @@ struct Header
 /// DNS Question https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.2
 /// </summary>
 [DebuggerDisplay("Name: {Name}, Type: {QuestionType}")] // <-- QuestionType name?
-struct Question
+class Question
 {
     public Question(string name, ushort questionType)
     {
@@ -164,6 +164,16 @@ struct Question
         Name = name;
         QuestionType = questionType;
         QuestionClass = RecordClass.IN;
+    }
+    
+    public Question(string name, ushort questionType, ushort questionClass)
+    {
+        // normalize
+        if (!name.EndsWith('.')) name += '.';
+        
+        Name = name;
+        QuestionType = questionType;
+        QuestionClass = questionClass;
     }
     
     /// <summary>
@@ -186,7 +196,7 @@ struct Question
 /// DNS Resource Record https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.2
 /// </summary>
 [DebuggerDisplay("Name: {Name}, Type: {Type}, TTL: {TimeToLive}, Data: {Data}")] // <-- QuestionType name?
-struct ResourceRecord
+class ResourceRecord
 {
     /// <summary>
     /// Domain name resource record is for

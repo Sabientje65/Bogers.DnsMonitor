@@ -94,15 +94,11 @@ static class MessageSerializer
     /// <param name="src">Source byte array to deserialize header from</param>
     /// <param name="idx">Current index in deserialization process</param>
     /// <returns>DNS message question</returns>
-    private static Question DeserializeQuestion(byte[] src, ref int idx)
-    {
-        return new Question
-        {
-            Name = NameSerializer.ReadName(src, ref idx),
-            QuestionType = (ushort)(src[idx++] << 8 | src[idx++]),
-            QuestionClass = (ushort)(src[idx++] << 8 | src[idx++]),
-        };
-    }
+    private static Question DeserializeQuestion(byte[] src, ref int idx) => new Question(
+        NameSerializer.ReadName(src, ref idx),
+        (ushort)(src[idx++] << 8 | src[idx++]),
+        (ushort)(src[idx++] << 8 | src[idx++])
+    );
 
     /// <summary>
     /// Deserialize a resource record according to https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.3

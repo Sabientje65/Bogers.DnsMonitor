@@ -12,17 +12,73 @@ public class DnsResolver
         long myRouterIp = ((long)192 << 0 | ((long)168 << 8) | ((long)1 << 16) | ((long)1 << 24));
         long cloudflareIp = ((byte)1 << 0) | ((byte)1 << 8) | ((byte)1 << 16) | ((byte)1 << 24);
         
-        var root = new IPEndPoint(new IPAddress(RootNameServer.A), 53);
+        var ns = new IPEndPoint(new IPAddress(RootNameServer.A), 53);
         
         using var udp = new UdpClient(AddressFamily.InterNetwork);
-        udp.Connect(root);
+        // udp.Connect(ns);
 
-        var msg = Message.Request(new Question("online", RecordType.A));
+        // var msg = Message.Request(new Question("bogers.online", RecordType.A));
+        var myIPV4 = await QueryARecord(udp, "bogers.online", ns);
+        Console.WriteLine($"IPV4 for bogers.online is {myIPV4}");
+    }
 
-        var serialized = MessageSerializer.Serialize(msg);
-        await udp.SendAsync(serialized);
-        var result = await udp.ReceiveAsync();
-        var message = MessageSerializer.Deserialize(result.Buffer);
+    private static async Task<string> QueryARecord(
+        UdpClient udp,
+        string name,
+        IPEndPoint to
+    )
+    {
+        var answer = Cache.Lookup(name, RecordType.A);
+        if (answer != null) return answer.Data;
+        
+        var request = Message.Request(new Question(name, RecordType.A));
+        await udp.SendAsync(MessageSerializer.Serialize(request), to);
+        var responseBuffer = await udp.ReceiveAsync();
+        var response = MessageSerializer.Deserialize(responseBuffer.Buffer);
+
+        answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A) ?? 
+                     response.Additional.FirstOrDefault(x => x.Type == RecordType.A && x.Data.Equals(name));
+
+        if (answer != null) return answer.Data;
+
+        foreach (var rr in response.Answer.Where(x => x.Type == RecordType.A)) Cache.Push(rr);
+        // foreach (var rr in response.Authority) Cache.Push(rr);
+        foreach (var rr in response.Additional.Where(x => x.Type == RecordType.A)) Cache.Push(rr);
+
+        foreach (var ns in response.Authority)
+        {
+            if (ns.Type != RecordType.NS) continue;
+
+            // take A records for ease, can also take AAAA as fallback?
+            var glue = response.Additional.FirstOrDefault(x => x.Type == RecordType.A && x.Name.Equals(ns.Data));
+            var glueData = glue?.Data;
+            if (glueData == null)
+            {
+                glueData = await QueryARecord(udp, ns.Data, new IPEndPoint(RootNameServer.A, 53));
+                if (glueData == null) continue;
+            }
+
+            var glueEp = IPEndPoint.Parse(glueData);
+            glueEp.Port = 53;
+
+            var glueResponse = await QueryARecord(udp, name, glueEp);
+            if (!String.IsNullOrEmpty(glueResponse)) return glueResponse;
+        }
+
+        return null;
+    }
+
+
+    // todo: Move cache to SQLite DB
+    private static class Cache
+    {
+        private static readonly IDictionary<string, ResourceRecord> _lookup = new Dictionary<string, ResourceRecord>();
+
+        // todo: account for ttl
+        public static void Push(ResourceRecord record) => _lookup[$"{record.Name}_{record.Type}"] = record;
+        
+        public static ResourceRecord? Lookup(string name, ushort type) => _lookup.TryGetValue($"{name}_{type}", out var record) ? record : null;
+        
     }
     
     /// <summary>
