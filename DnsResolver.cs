@@ -48,7 +48,7 @@ public class DnsResolver
         using var udp = new UdpClient(AddressFamily.InterNetwork);
         udp.Connect(root);
  
-        var bytes = new List<byte>(new Headers {
+        var bytes = new List<byte>(new Header {
             Id = (ushort)((id[0] << 8) | id[1]),
             QuestionCount = 1,
             OpCode = 0
@@ -64,23 +64,358 @@ public class DnsResolver
         await udp.SendAsync(bytes.ToArray());
         var result = await udp.ReceiveAsync();
 
+        var original = result.Buffer;
+        var message = Message.Deserialize(result.Buffer);
+        var reSerialized = message.Serialize();
+        var diff = original
+            .Select((b, i) => new { b, i })
+            .Where((v) => reSerialized[v.i] != v.b)
+            .Select((v) => new { i = v.i, o = v.b, n = reSerialized[v.i] })
+            .ToArray();
+        
+        var message2 = Message.Deserialize(reSerialized);
+
         // todo: make span/memory<byte>
-        var resultBuffer = result.Buffer;
+        // var resultBuffer = result.Buffer;
 
-        var response = Headers.Deserialize(resultBuffer);
-        var question = Question.Deserialize(resultBuffer, 12);
-        var idx = 12 + question.Serialize().Length;
-        var resourceRecords = new ResourceRecord[response.ResourceRecordCount];
-        var nameServerRecords = new ResourceRecord[response.NameServerResourceRecordCount];
-        var additionalRecords = new ResourceRecord[response.AdditionalRecordCount];
-        for (var rrIdx = 0; rrIdx < resourceRecords.Length; rrIdx++) resourceRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
-        for (var rrIdx = 0; rrIdx < nameServerRecords.Length; rrIdx++) nameServerRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
-        for (var rrIdx = 0; rrIdx < additionalRecords.Length; rrIdx++) additionalRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+        // var response = Header.Deserialize(resultBuffer);
+        // var question = Question.Deserialize(resultBuffer, 12);
+        // var idx = 12 + question.Serialize().Length;
+        // var resourceRecords = new ResourceRecord[response.ResourceRecordCount];
+        // var nameServerRecords = new ResourceRecord[response.NameServerResourceRecordCount];
+        // var additionalRecords = new ResourceRecord[response.AdditionalRecordCount];
+        // for (var rrIdx = 0; rrIdx < resourceRecords.Length; rrIdx++) resourceRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+        // for (var rrIdx = 0; rrIdx < nameServerRecords.Length; rrIdx++) nameServerRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
+        // for (var rrIdx = 0; rrIdx < additionalRecords.Length; rrIdx++) additionalRecords[rrIdx] = ResourceRecord.Deserialize(resultBuffer, ref idx);
 
-        var res = 0;
+        // var res = 0;
     }
     
 }
+
+/// <summary>
+/// Message format according to https://datatracker.ietf.org/doc/html/rfc1035#section-4
+/// </summary>
+struct Message
+{
+
+    public Header Header;
+
+    public Question[] Question;
+
+    public ResourceRecord[] Answer;
+
+    public ResourceRecord[] Authority;
+
+    public ResourceRecord[] Additional;
+
+    public static Message Deserialize(byte[] src)
+    {
+        var idx = 0;
+        
+        var header = DeserializeHeader(src, ref idx);
+        var questions = new Question[header.QuestionCount];
+        var answers = new ResourceRecord[header.ResourceRecordCount];
+        var authorities = new ResourceRecord[header.NameServerResourceRecordCount];
+        var additionalRecords = new ResourceRecord[header.AdditionalRecordCount];
+        for (var rrIdx = 0; rrIdx < questions.Length; rrIdx++) questions[rrIdx] = DeserializeQuestion(src, ref idx);
+        for (var rrIdx = 0; rrIdx < answers.Length; rrIdx++) answers[rrIdx] = DeserializeResourceRecord(src, ref idx);
+        for (var rrIdx = 0; rrIdx < authorities.Length; rrIdx++) authorities[rrIdx] = DeserializeResourceRecord(src, ref idx);
+        for (var rrIdx = 0; rrIdx < additionalRecords.Length; rrIdx++) additionalRecords[rrIdx] = DeserializeResourceRecord(src, ref idx);
+
+        return new Message
+        {
+            Header = header,
+            Question = questions,
+            Answer = answers,
+            Authority = authorities,
+            Additional = additionalRecords
+        };
+    }
+
+    public byte[] Serialize()
+    {
+        // length is based on contained data, currently we calculate everything on the fly
+        // if deemed necessary, length can also be calculated beforehand on field modification
+        // all kinda depends on how often length is used
+        var buffer = new byte[512]; // max size
+        var idx = 0;
+        var seen = new Dictionary<string, byte>();
+
+        SerializeHeader(buffer, ref idx);
+        SerializeQuestions(buffer, seen, ref idx);
+        foreach (var answer in Answer) SerializeResourceRecord(answer, buffer, seen, ref idx);
+        foreach (var authority in Authority) SerializeResourceRecord(authority, buffer, seen, ref idx);
+        foreach (var additional in Additional) SerializeResourceRecord(additional, buffer, seen, ref idx);
+
+        return buffer;
+    }
+
+    private void SerializeHeader(byte[] buffer, ref int idx)
+    {
+        idx += 12;
+        
+        buffer[0] = BitMask.ReadOctet(Header.Id, 1);
+        buffer[1] = BitMask.ReadOctet(Header.Id, 0);
+        if (Header.IsResponse) buffer[2] |= 0b_1_0000000;
+        buffer[2] |= (byte)(BitMask.ReadNybble(Header.OpCode, 3) << 3);
+        if (Header.IsAuthoritativeAnswer) buffer[2] |= 00000_1_00;
+        if (Header.IsTruncated) buffer[2] |= 000000_1_0;
+        if (Header.RecursionDesired) buffer[2] |= 000000_1;
+
+        if (Header.RecursionAvailable) buffer[3] |= 0b_1_0000000;
+        buffer[3] |= (BitMask.ReadNybble(Header.ResponseCode, 3));
+        
+        // QDCOUNT
+        buffer[4] = BitMask.ReadOctet(Header.QuestionCount, 1);
+        buffer[5] = BitMask.ReadOctet(Header.QuestionCount, 0);
+
+        // ANCOUNT
+        buffer[6] = BitMask.ReadOctet(Header.ResourceRecordCount, 1);
+        buffer[7] = BitMask.ReadOctet(Header.ResourceRecordCount, 0);
+        
+        // NSCOUNT
+        buffer[8] = BitMask.ReadOctet(Header.NameServerResourceRecordCount, 1);
+        buffer[9] = BitMask.ReadOctet(Header.NameServerResourceRecordCount, 0);
+        
+        // ARCOUNT
+        buffer[10] = BitMask.ReadOctet(Header.AdditionalRecordCount, 1);
+        buffer[11] = BitMask.ReadOctet(Header.AdditionalRecordCount, 0);
+    }
+    
+    private void SerializeQuestions(byte[] buffer, Dictionary<string, byte> seen, ref int idx) 
+    {
+        foreach (var question in Question)
+        {
+            SerializeLabel(question.Name, buffer, seen, ref idx);
+            buffer[idx++] = BitMask.ReadOctet(question.QuestionType, 1);
+            buffer[idx++] = BitMask.ReadOctet(question.QuestionType, 0);
+            buffer[idx++] = BitMask.ReadOctet(question.QuestionClass, 1);
+            buffer[idx++] = BitMask.ReadOctet(question.QuestionClass, 0);
+        }
+    }
+
+    private void SerializeAnswer(byte[] buffer, Dictionary<string, byte> seen, ref int idx)
+    {
+        foreach (var answer in Answer) SerializeResourceRecord(answer, buffer, seen, ref idx);
+    }
+
+    private void SerializeResourceRecord(ResourceRecord resourceRecord, byte[] buffer, Dictionary<string, byte> seen, ref int idx)
+    {
+        SerializeLabel(resourceRecord.Name, buffer, seen, ref idx);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.Type, 1);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.Type, 0);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.Class, 1);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.Class, 0);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.TimeToLive, 3);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.TimeToLive, 2);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.TimeToLive, 1);
+        buffer[idx++] = BitMask.ReadOctet(resourceRecord.TimeToLive, 0);
+        
+        // fixme: include rdatalength, should be based on data (type)
+        var length = resourceRecord.Type switch
+        {
+            1 => 4, // ipv 4
+            2 => CalculateLabelLength(resourceRecord.Data, seen),
+            28 => 16, // ipv 6
+            _ => 0
+        };
+        
+        buffer[idx++] = BitMask.ReadOctet(length, 1);
+        buffer[idx++] = BitMask.ReadOctet(length, 0);
+        
+        switch (resourceRecord.Type)
+        {
+            case 2:
+                SerializeLabel(resourceRecord.Data, buffer, seen, ref idx);
+                break;
+            case 1:
+            case 28:
+                SerializeIp(resourceRecord.Data, buffer, ref idx);
+                break;
+        }
+    }
+
+    private int CalculateLabelLength(string label, Dictionary<string, byte> seen)
+    {
+        // pointer
+        if (seen.ContainsKey(label)) return 2;
+        
+        // local copy, we only care about a value becoming a pointer, use a simple hashset for that
+        var seenLite = new HashSet<string>(seen.Keys);
+
+        var length = 0;
+        while (true)
+        {
+            // close sequence with a pointer
+            if (!seenLite.Add(label)) return length + 2;
+            
+            // are we done?
+            var segmentEnd = label.IndexOf('.');
+            if (segmentEnd == -1) break;
+
+            var segment = label[..segmentEnd];
+            
+            // assume 1 byte/char + length marker
+            length += segment.Length + 1;
+            
+            // prepare for next segment, ignore segment separator ('.')
+            label = label[(segmentEnd + 1)..];
+        }
+
+        // account for termiantor
+        return length + 1;
+    }
+
+    private void SerializeIp(string ip, byte[] buffer, ref int idx)
+    {
+        var bytes = IPAddress.Parse(ip).GetAddressBytes();
+        bytes.CopyTo(buffer, idx);
+        idx += bytes.Length;
+    }
+    
+    private void SerializeLabel(string label, byte[] buffer, Dictionary<string, byte> seen, ref int idx)
+    {
+        // b.nic.online
+        // entire label sequence can be a pointer
+        if (seen.TryGetValue(label, out var pointerOffset))
+        {
+            buffer[idx++] = 0b1100_0000;
+            buffer[idx++] = pointerOffset;
+            return;
+        }
+
+        // var segmentStart = 0;
+        while (true)
+        {
+            // close sequence with a pointer
+            if (seen.TryGetValue(label, out pointerOffset))
+            {
+                buffer[idx++] = 0b1100_0000;
+                buffer[idx++] = pointerOffset;
+                return;
+            }
+            
+            // are we done?
+            var segmentEnd = label.IndexOf('.');
+            if (segmentEnd == -1) break;
+            
+            seen[label] = (byte)idx;
+            var segment = label[..segmentEnd];
+            
+            buffer[idx++] = (byte)segment.Length;
+            Encoding.ASCII.GetBytes(segment).CopyTo(buffer, idx);
+            idx += segment.Length;
+            
+            // prepare for next segment, ignore segment separator ('.')
+            label = label[(segmentEnd + 1)..];
+        }
+
+        // 0 byte, terminator
+        buffer[idx++] = 0x00;
+    }
+
+    private static Header DeserializeHeader(byte[] src, ref int idx)
+    {
+        // header is always 12 bytes long
+        idx += 12;
+        
+        return new Header
+        {
+            Id = (byte)(src[0] << 8 | src[1]),
+
+            IsResponse = BitMask.IsSet(src[2], 7),
+            OpCode = BitMask.ReadNybble(src[2], 6),
+            IsAuthoritativeAnswer = BitMask.IsSet(src[2], 2),
+            IsTruncated = BitMask.IsSet(src[2], 1),
+            RecursionDesired = BitMask.IsSet(src[2], 0),
+
+            RecursionAvailable = BitMask.IsSet(src[3], 7),
+            ResponseCode = BitMask.ReadNybble(src[3], 3),
+
+            QuestionCount = (byte)(src[4] << 8 | src[5]),
+            ResourceRecordCount = (byte)(src[6] << 8 | src[7]),
+            NameServerResourceRecordCount = (byte)(src[8] << 8 | src[9]),
+            AdditionalRecordCount = (byte)(src[10] << 8 | src[11]),
+        };
+    }
+
+    private static Question DeserializeQuestion(byte[] src, ref int idx)
+    {
+        return new Question
+        {
+            Name = LabelUtils.ReadLabel(src, ref idx),
+            QuestionType = (short)(src[idx++] << 8 | src[idx++]),
+            QuestionClass = (short)(src[idx++] << 8 | src[idx++]),
+        };
+    }
+    
+    // public static Question Deserialize(byte[] src, int idx)
+    // {
+    //     var nameLength = src[idx++];
+    //     
+    //     return new Question
+    //     {
+    //         Name = Encoding.ASCII.GetString(src, idx, nameLength),
+    //         QuestionType = (short)(src[idx + 1 + nameLength] << 8 | src[idx + 2 + nameLength]),
+    //         QuestionClass = (short)(src[idx + 3 + nameLength] << 8 | src[idx + 4 + nameLength]),
+    //     };
+    // }
+
+    private static ResourceRecord DeserializeResourceRecord(byte[] src, ref int idx)
+    {
+        var name = LabelUtils.ReadLabel(src, ref idx);
+        var type = (short)((src[idx++] << 8) | src[idx++]);
+        var @class = (short)((src[idx++] << 8) | src[idx++]);
+        var ttl = ((src[idx++] << 24) | (src[idx++] << 16) | (src[idx++] << 8) | (src[idx++]));
+        var data = type switch
+        {
+            // A record
+            1 => ReadHostAddress(src, ref idx),
+            
+            // AAAA record
+            28 => ReadHostAddress(src, ref idx),
+            
+            // NS record
+            2 => ReadNSName(src, ref idx),
+            _ => SkipUnknownData(src, ref idx)
+        };
+
+        return new ResourceRecord
+        {
+            Name = name,
+            Type = type,
+            Class = @class,
+            TimeToLive = ttl,
+            Data = data
+        };
+    }
+
+    private static string SkipUnknownData(byte[] src, ref int idx)
+    {
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        idx += length;
+        return String.Empty;
+    }
+
+    private static string ReadHostAddress(byte[] src, ref int idx)
+    {
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        var ip = new IPAddress(src[idx..(idx + length)]);
+        idx += length;
+        return ip.ToString();
+    }
+    
+    private static string ReadNSName(byte[] src, ref int idx)
+    {
+        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+        var label = LabelUtils.ReadLabel(src, idx);
+        idx += length;
+        return label;
+    }
+    
+}
+
 
 struct Question
 {
@@ -117,17 +452,17 @@ struct Question
         return response;
     }
 
-    public static Question Deserialize(byte[] src, int idx)
-    {
-        var nameLength = src[idx++];
-        
-        return new Question
-        {
-            Name = Encoding.ASCII.GetString(src, idx, nameLength),
-            QuestionType = (short)(src[idx + 1 + nameLength] << 8 | src[idx + 2 + nameLength]),
-            QuestionClass = (short)(src[idx + 3 + nameLength] << 8 | src[idx + 4 + nameLength]),
-        };
-    }
+    // public static Question Deserialize(byte[] src, int idx)
+    // {
+    //     var nameLength = src[idx++];
+    //     
+    //     return new Question
+    //     {
+    //         Name = Encoding.ASCII.GetString(src, idx, nameLength),
+    //         QuestionType = (short)(src[idx + 1 + nameLength] << 8 | src[idx + 2 + nameLength]),
+    //         QuestionClass = (short)(src[idx + 3 + nameLength] << 8 | src[idx + 4 + nameLength]),
+    //     };
+    // }
 }
 
 struct ResourceRecord
@@ -138,64 +473,57 @@ struct ResourceRecord
     public int TimeToLive;
     public string Data;
 
-    public static ResourceRecord Deserialize(byte[] src, ref int idx)
-    {
-        var name = ReadName(src, ref idx);
-        var type = (short)((src[idx++] << 8) | src[idx++]);
-        var @class = (short)((src[idx++] << 8) | src[idx++]);
-        var ttl = ((src[idx++] << 24) | (src[idx++] << 16) | (src[idx++] << 8) | (src[idx++]));
-        var data = type switch
-        {
-            // A record
-            1 => ReadHostAddress(src, ref idx),
-            
-            // AAAA record
-            28 => ReadHostAddress(src, ref idx),
-            
-            // NS record
-            2 => ReadNSName(src, ref idx),
-            _ => null
-        };
-
-        return new ResourceRecord
-        {
-            Name = name,
-            Type = type,
-            Class = @class,
-            TimeToLive = ttl,
-            Data = data
-        };
-    }
-
-    private static string ReadName(byte[] src, ref int idx)
-    {
-        var (label, length) = LabelUtils.ReadLabel(src, idx);
-        idx += length;
-        return label;
-    }
-
-    private readonly string ReadUnknownData(byte[] src, ref int idx)
-    {
-        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
-        idx += length;
-        return String.Empty;
-    }
-
-    private static string ReadHostAddress(byte[] src, ref int idx)
-    {
-        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
-        var ip = new IPAddress(src[idx..(idx + length)]);
-        idx += length;
-        return ip.ToString();
-    }
-    
-    private static string ReadNSName(byte[] src, ref int idx)
-    {
-        var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
-        var (label, _) = LabelUtils.ReadLabel(src, idx);
-        idx += length;
-        return label;
-    }
+    // public static ResourceRecord Deserialize(byte[] src, ref int idx)
+    // {
+    //     var name = LabelUtils.ReadLabel(src, ref idx);
+    //     var type = (short)((src[idx++] << 8) | src[idx++]);
+    //     var @class = (short)((src[idx++] << 8) | src[idx++]);
+    //     var ttl = ((src[idx++] << 24) | (src[idx++] << 16) | (src[idx++] << 8) | (src[idx++]));
+    //     var data = type switch
+    //     {
+    //         // A record
+    //         1 => ReadHostAddress(src, ref idx),
+    //         
+    //         // AAAA record
+    //         28 => ReadHostAddress(src, ref idx),
+    //         
+    //         // NS record
+    //         2 => ReadNSName(src, ref idx),
+    //         _ => SkipUnknownData(src, ref idx)
+    //     };
+    //
+    //     return new ResourceRecord
+    //     {
+    //         Name = name,
+    //         Type = type,
+    //         Class = @class,
+    //         TimeToLive = ttl,
+    //         Data = data
+    //     };
+    // }
+    //
+    // private static string SkipUnknownData(byte[] src, ref int idx)
+    // {
+    //     var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+    //     idx += length;
+    //     return String.Empty;
+    // }
+    //
+    // private static string ReadHostAddress(byte[] src, ref int idx)
+    // {
+    //     var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+    //     var ip = new IPAddress(src[idx..(idx + length)]);
+    //     idx += length;
+    //     return ip.ToString();
+    // }
+    //
+    // private static string ReadNSName(byte[] src, ref int idx)
+    // {
+    //     var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
+    //     var (label, _) = LabelUtils.ReadLabel(src, idx);
+    //     idx += length;
+    //     return label;
+    // }
 }
 
 // ILabel -> ConcreteLabel, OffsetLabel, LabelCollection, etc.
@@ -203,12 +531,32 @@ struct ResourceRecord
 public static class LabelUtils
 {
 
-    public static (string label, int length) ReadLabel(byte[] src, int idx)
+    public static string ReadLabel(byte[] src, ref int idx)
     {
-        var length = IsPointer(src, idx) ? 2 : src[idx];
+        int length;
+        
+        // pointer -> static length of 2
+        if (IsPointer(src, idx)) length = 2;
+        else
+        {
+            // sequence length + sequence content
+            length = src[idx] + 1;
+            
+            // sequences end with either a pointer (2 bytes) or a terminator (1 byte)
+            length += IsPointer(src, src[idx + length]) ? 2 : 1;
+        }
+        
         var sb = new StringBuilder();
         AppendLabels(sb, src, idx);
-        return (sb.ToString(), length);
+        idx += length;
+        return sb.ToString();
+    }
+    
+    public static string ReadLabel(byte[] src, int idx)
+    {
+        var sb = new StringBuilder();
+        AppendLabels(sb, src, idx);
+        return sb.ToString();
     }
 
     private static void AppendLabels(StringBuilder sb, byte[] src, int idx)
@@ -242,7 +590,7 @@ public static class LabelUtils
 }
 
 // [StructLayout(LayoutKind.Sequential)]
-struct Headers
+struct Header
 {
     public ushort Id;
 
@@ -305,7 +653,7 @@ struct Headers
         return serialized;
     }
 
-    public static Headers Deserialize(byte[] data) => new Headers
+    public static Header Deserialize(byte[] data) => new Header
     {
         Id = (byte)(data[0] << 8 | data[1]),
         
@@ -398,7 +746,7 @@ static class BitMask
     public static byte ReadOctet(int value, int octet) => (byte)(value >> (octet * 8));
     
     /// <summary>
-    /// Read the byte octet at the given position
+    /// Read the byte octet from at the given position
     /// </summary>
     /// <param name="value">16 bit integer</param>
     /// <param name="octet">Octet position</param>
