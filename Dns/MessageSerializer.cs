@@ -292,7 +292,7 @@ static class NameSerializer
             length = src[idx] + 1;
             
             // sequences end with either a pointer (2 bytes) or a terminator (1 byte)
-            length += IsPointer(src, src[idx + length]) ? 2 : 1;
+            length += IsPointer(src, idx + length) ? 2 : 1;
         }
         
         var sb = new StringBuilder();
