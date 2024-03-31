@@ -1,6 +1,6 @@
 ﻿using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using Microsoft.Data.Sqlite;
 
 namespace Bogers.DnsMonitor.Dns;
 
@@ -8,6 +8,8 @@ public class DnsResolver
 {
     public static async Task QueryResourceRecords(string hostName)
     {
+        await SqliteCache.Initialize();
+        
         // 1.1.1.1, cloudflare dns, 00000001_00000001_00000001_00000001
         long myRouterIp = ((long)192 << 0 | ((long)168 << 8) | ((long)1 << 16) | ((long)1 << 24));
         long cloudflareIp = ((byte)1 << 0) | ((byte)1 << 8) | ((byte)1 << 16) | ((byte)1 << 24);
@@ -18,7 +20,7 @@ public class DnsResolver
         // udp.Connect(ns);
 
         // var msg = Message.Request(new Question("bogers.online", RecordType.A));
-        var myIPV4 = await QueryARecord(udp, "bogers.online", ns);
+        var myIPV4 = await QueryARecord(udp, "chapoco.bogers.online", ns);
         Console.WriteLine($"IPV4 for bogers.online is {myIPV4}");
     }
 
@@ -28,7 +30,7 @@ public class DnsResolver
         IPEndPoint to
     )
     {
-        var answer = Cache.Lookup(name, RecordType.A);
+        var answer = await SqliteCache.Find(name, RecordType.A);
         if (answer != null) return answer.Data;
         
         var request = Message.Request(new Question(name, RecordType.A));
@@ -41,9 +43,8 @@ public class DnsResolver
 
         if (answer != null) return answer.Data;
 
-        foreach (var rr in response.Answer.Where(x => x.Type == RecordType.A)) Cache.Push(rr);
-        // foreach (var rr in response.Authority) Cache.Push(rr);
-        foreach (var rr in response.Additional.Where(x => x.Type == RecordType.A)) Cache.Push(rr);
+        foreach (var rr in response.Answer.Where(x => x.Type == RecordType.A)) await SqliteCache.Add(rr);
+        foreach (var rr in response.Additional.Where(x => x.Type == RecordType.A)) await SqliteCache.Add(rr);
 
         foreach (var ns in response.Authority)
         {
@@ -68,11 +69,126 @@ public class DnsResolver
         return null;
     }
 
+    /// <summary>
+    /// SQLite based cache implementation
+    /// </summary>
+    private class SqliteCache
+    {
+        private static string ConnectionString = """Data Source=.\dnscache.db; Pooling=True""";
+
+        /// <summary>
+        /// Initialize the SQLite cache, ensuring the necessary tables etc. are created
+        /// </summary>
+        public static async Task Initialize()
+        {
+            await using var con = CreateConnection();
+            await con.OpenAsync();
+            await using var cmd = con.CreateCommand();
+
+            cmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS resource_records ( 
+                    name TEXT collate nocase NOT NULL
+                    , type NUMERIC NOT NULL
+                    , class NUMERIC NOT NULL
+                    , ttl NUMERIC NOT NULL 
+                    , data TEXT NOT NULL
+                    , created INTEGER DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                CREATE INDEX IF NOT EXISTS resource_records_name_type_ttl_created ON resource_records (name, type, ttl, created) 
+            """;
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+        
+        /// <summary>
+        /// Add a resource record to the cache
+        /// </summary>
+        /// <param name="record">Record to cache</param>
+        public static async Task Add(ResourceRecord record)
+        {
+            await using var con = CreateConnection();
+            await con.OpenAsync();
+            await using var cmd = con.CreateCommand();
+
+            cmd.CommandText = """
+                INSERT INTO resource_records (name, type, class, ttl, data)
+                values (@name, @type, @class, @tll, @data)
+            """;
+
+            cmd.Parameters.Add("@name", SqliteType.Text).Value = record.Name;
+            cmd.Parameters.Add("@type", SqliteType.Text).Value = record.Type;
+            cmd.Parameters.Add("@class", SqliteType.Text).Value = record.Class;
+            cmd.Parameters.Add("@tll", SqliteType.Text).Value = record.TimeToLive;
+            cmd.Parameters.Add("@data", SqliteType.Text).Value = record.Data;
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        /// <summary>
+        /// Attempt to lookup a non-expired resource record for the given domain name of the given type
+        /// </summary>
+        /// <param name="name">Domain name</param>
+        /// <param name="type">Record type <see cref="RecordType"/></param>
+        /// <returns>Resource record when found</returns>
+        public static async Task<ResourceRecord?> Find(string name, ushort type)
+        {
+            await using var con = CreateConnection();
+            await con.OpenAsync();
+            await using var cmd = con.CreateCommand();
+
+            cmd.CommandText = """
+                SELECT name, type, class, ttl, data
+                FROM resource_records
+                WHERE name = @name
+                    AND type = @type
+                    AND ttl < CURRENT_TIMESTAMP
+                LIMIT 1
+            """;
+
+            cmd.Parameters.Add("@name", SqliteType.Text).Value = name;
+            cmd.Parameters.Add("@type", SqliteType.Integer).Value = type;
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (!reader.Read()) return null;
+
+            return new ResourceRecord
+            {
+                Name = reader.GetString(0),
+                Type = (ushort)reader.GetInt16(1),
+                Class = (ushort)reader.GetInt16(2),
+                TimeToLive = reader.GetInt32(3),
+                Data = reader.GetString(4),
+            };
+        }
+
+        /// <summary>
+        /// Cleanup expired records from the DB
+        /// </summary>
+        public Task Vacuum()
+        {
+            return Task.CompletedTask;
+        }
+
+        private static SqliteConnection CreateConnection() => new SqliteConnection(ConnectionString);
+
+        class Config
+        {
+            public string ConnectionString { get; set; } 
+        }
+    }
+
 
     // todo: Move cache to SQLite DB
     private static class Cache
     {
         private static readonly IDictionary<string, ResourceRecord> _lookup = new Dictionary<string, ResourceRecord>();
+
+        public static Task Flush()
+        {
+            _lookup.Clear();
+            return Task.CompletedTask;
+        }
 
         // todo: account for ttl
         public static void Push(ResourceRecord record) => _lookup[$"{record.Name}_{record.Type}"] = record;
