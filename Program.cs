@@ -1,10 +1,19 @@
-using Bogers.DnsMonitor;
 using Bogers.DnsMonitor.Dns;
 
-await DnsResolver.QueryResourceRecords("bogers.online");
+var builder = Host.CreateApplicationBuilder();
 
-// var builder = Host.CreateApplicationBuilder(args);
-// builder.Services.AddHostedService<MainWorker>();
-//
-// var host = builder.Build();
-// host.Run();
+builder.Services
+    .AddSingleton<SqliteResolverCache>(_ =>
+    {
+        var connectionString = builder.Configuration.GetValue<string?>("dns:cache:connectionstring")!;
+        var resolverCache = String.IsNullOrEmpty(connectionString) ?
+            new SqliteResolverCache() :
+            new SqliteResolverCache(connectionString);
+        
+        resolverCache.Initialize();
+        return resolverCache;
+    })
+    .AddSingleton<DnsResolver>();
+
+var result = await builder.Build().Services.GetService<DnsResolver>().ResolveIPV4("chapoco.bogers.online");
+Console.WriteLine("Result: " + result);

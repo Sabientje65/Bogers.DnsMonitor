@@ -70,7 +70,7 @@ static class MessageSerializer
         
         return new Header
         {
-            Id = (byte)(src[0] << 8 | src[1]),
+            Id = (ushort)((src[0] << 8) | src[1]),
 
             IsResponse = BitMask.IsSet(src[2], 7),
             OpCode = BitMask.ReadNybble(src[2], 6),
@@ -116,7 +116,8 @@ static class MessageSerializer
         {
             RecordType.A => DeserializeHostAddress(src, ref idx),
             RecordType.AAAA => DeserializeHostAddress(src, ref idx),
-            RecordType.NS => DeserializeNS(src, ref idx),
+            RecordType.CNAME => DeserializeName(src, ref idx),
+            RecordType.NS => DeserializeName(src, ref idx),
             _ => DeserializeUnknownData(src, ref idx)
         };
 
@@ -154,7 +155,7 @@ static class MessageSerializer
     /// <summary>
     /// Deserialize a name server name
     /// </summary>
-    private static string DeserializeNS(byte[] src, ref int idx)
+    private static string DeserializeName(byte[] src, ref int idx)
     {
         var length = (short)((short)src[idx++] << 8) | ((short)src[idx++]);
         var label = NameSerializer.ReadName(src, idx);

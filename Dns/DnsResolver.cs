@@ -3,74 +3,156 @@ using System.Net.Sockets;
 
 namespace Bogers.DnsMonitor.Dns;
 
-public class DnsResolver
+class DnsResolver : IDisposable
 {
-    public static async Task QueryResourceRecords(string hostName)
+    private readonly UdpClient _udp = new UdpClient(AddressFamily.InterNetwork);
+    private readonly SqliteResolverCache _resolverCache;
+
+    public DnsResolver(SqliteResolverCache resolverCache) => _resolverCache = resolverCache;
+
+    /// <summary>
+    /// Resolve the IPV4 address asociated with the given domain name
+    /// </summary>
+    /// <param name="name">Domain name</param>
+    /// <returns>IPV4 or null when resolution failed</returns>
+    public async Task<string?> ResolveIPV4(string name)
     {
-        await SqliteResolverCache.Initialize();
-        await SqliteResolverCache.Clean();
-        
         // start of by normalizing our hostname
-        if (!hostName.EndsWith('.')) hostName += '.';
-        
-        // 1.1.1.1, cloudflare dns, 00000001_00000001_00000001_00000001
-        long myRouterIp = ((long)192 << 0 | ((long)168 << 8) | ((long)1 << 16) | ((long)1 << 24));
-        long cloudflareIp = ((byte)1 << 0) | ((byte)1 << 8) | ((byte)1 << 16) | ((byte)1 << 24);
-        
-        var ns = new IPEndPoint(new IPAddress(RootNameServer.A), 53);
-        
-        using var udp = new UdpClient(AddressFamily.InterNetwork);
-        // udp.Connect(ns);
-
-        // var msg = Message.Request(new Question("bogers.online", RecordType.A));
-        var myIPV4 = await QueryARecord(udp, "chapoco.bogers.online.", ns);
-        Console.WriteLine($"IPV4 for bogers.online is {myIPV4}");
+        if (!name.EndsWith('.')) name += '.';
+        return await QueryARecord(name);
     }
-
-    private static async Task<string> QueryARecord(
-        UdpClient udp,
-        string name,
-        IPEndPoint to
-    )
+    
+    /// <summary>
+    /// Resolve the IPV4 address associated with the given domain name
+    /// </summary>
+    /// <param name="name">Domain name</param>
+    /// <returns>When found, IPV4 address associated with the given domain</returns>
+    private async Task<string?> QueryARecord(string name)
     {
-        var answer = await SqliteResolverCache.FindFirst(name, RecordType.A);
-        if (answer != null) return answer.Data;
+        // follow cname to actual name
+        var cname = await _resolverCache.FindFirst(name, RecordType.CNAME);
+        if (cname != null) name = cname.Data;
         
-        var request = Message.Request(new Question(name, RecordType.A));
-        await udp.SendAsync(MessageSerializer.Serialize(request), to);
-        var responseBuffer = await udp.ReceiveAsync();
-        var response = MessageSerializer.Deserialize(responseBuffer.Buffer);
-        
-        // first, cache everything in our response for quicker future lookups
-        foreach (var rr in response.Answer) await SqliteResolverCache.Add(rr); 
-        foreach (var rr in response.Authority) await SqliteResolverCache.Add(rr); 
-        foreach (var rr in response.Additional) await SqliteResolverCache.Add(rr); 
-        
-        answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
+        var answer = await _resolverCache.FindFirst(name, RecordType.A);
         if (answer != null) return answer.Data;
 
-        foreach (var ns in response.Authority)
+        var ns = await ResolveNS(name);
+        var result = await QueryARecord(name, ns);
+        
+        // assuming we got our ns from cache... try one last time starting from a root server
+        if (String.IsNullOrEmpty(result)) result = await QueryARecord(name, new IPAddress(RootNameServer.A));
+
+        return result;
+    }
+    
+    /// <summary>
+    /// Resolve the IPV4 address associated with the given domain name using the given nameserver as starting point
+    /// </summary>
+    /// <param name="name">Domain name</param>
+    /// <param name="ns">Nameserver to use as starting point</param>
+    /// <returns>When found, IPV4 address associated with the given domain</returns>
+    private async Task<string?> QueryARecord(string name, IPAddress ns)
+    {
+        var response = await QueryRemote(ns, new Question(name, RecordType.A)); 
+        var answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
+        if (answer != null) return answer.Data;
+            
+        foreach (var nsRecord in response.Authority)
         {
             // assumed to always be true
-            if (ns.Type != RecordType.NS) continue;
+            if (nsRecord.Type != RecordType.NS) continue;
 
             // take A records for ease, can also take AAAA as fallback?
-            var glue = response.Additional.FirstOrDefault(x => x.Type == RecordType.A && x.Name.Equals(ns.Data));
+            var glue = response.Additional.FirstOrDefault(x => x.Type == RecordType.A && x.Name.Equals(nsRecord.Data));
             var glueData = glue?.Data;
             if (glueData == null)
             {
-                glueData = await QueryARecord(udp, ns.Data, new IPEndPoint(RootNameServer.A, 53));
+                var glueNS = await ResolveNS(nsRecord.Data);
+                glueData = await QueryARecord(nsRecord.Data, glueNS);
                 if (glueData == null) continue;
             }
 
-            var glueEp = IPEndPoint.Parse(glueData);
-            glueEp.Port = 53;
-
-            var glueResponse = await QueryARecord(udp, name, glueEp);
+            var glueResponse = await QueryARecord(name, IPAddress.Parse(glueData));
             if (!String.IsNullOrEmpty(glueResponse)) return glueResponse;
         }
 
         return null;
+    }
+    
+    /// <summary>
+    /// Resolve the IP address of the NameServer server for the given <paramref name="name"/>
+    /// </summary>
+    /// <param name="name">Domain name</param>
+    /// <returns>NameServer IP address</returns>
+    private async Task<IPAddress> ResolveNS(string name)
+    {
+        // first try searching for our specific domain
+        var segments = name.Split('.');
+        var domains = new string[segments.Length - 1];
+        for (var i = 0; i < domains.Length; i++) domains[i] = String.Join('.', segments[i..]);
+
+        foreach (var domain in domains)
+        {
+            var nsRecord = await _resolverCache.FindFirst(domain, RecordType.NS);
+            if (nsRecord == null) continue;
+
+            var nsARecord = await _resolverCache.FindFirst(nsRecord.Data, RecordType.A);
+            if (nsARecord != null) return IPAddress.Parse(nsARecord.Data);
+                
+            // we do know our ns, just not its ip, take slow path -> full lookup
+            var nsIP = await QueryARecord(nsRecord.Data);
+            if (!String.IsNullOrEmpty(nsIP)) return IPAddress.Parse(nsIP);
+        }
+
+        // worst case scenario, default to one of the root servers
+        return new IPAddress(RootNameServer.A);
+    }
+    
+    
+    /// <summary>
+    /// Collection of pending query responses
+    /// </summary>
+    private readonly IDictionary<ushort, TaskCompletionSource<Message>> _pending = new Dictionary<ushort, TaskCompletionSource<Message>>();
+    
+    /// <summary>
+    /// Query the  <paramref name="remote"/> for the given <paramref name="question"/> 
+    /// </summary>
+    /// <param name="remote">Remote address</param>
+    /// <param name="question">DNS question</param>
+    /// <returns>Answer message</returns>
+    private async Task<Message> QueryRemote(IPAddress remote, Question question)
+    {
+        var ep = new IPEndPoint(remote, 53);
+        var req = Message.Request(question);
+        // byte[] responseBuffer;
+
+        Task<Message> myResponse;
+        lock (_pending) myResponse = (_pending[req.Header.Id] = new TaskCompletionSource<Message>()).Task;
+            
+        await _udp.SendAsync(MessageSerializer.Serialize(req), ep);
+        
+        // response is not guaranteed to be for our query, could also be for another query fired earlier on
+        var responseMessage = MessageSerializer.Deserialize(
+            (await _udp.ReceiveAsync()).Buffer
+        );
+        
+        lock (_pending)
+        {
+            if (_pending.TryGetValue(responseMessage.Header.Id, out var pending))
+            {
+                pending.SetResult(responseMessage);
+                _pending.Remove(responseMessage.Header.Id);
+            }
+        }
+        
+        var msg = await myResponse;
+
+        // first, cache everything in our response for quicker future lookups
+        foreach (var rr in msg.Answer) await _resolverCache.Add(rr); 
+        foreach (var rr in msg.Authority) await _resolverCache.Add(rr); 
+        foreach (var rr in msg.Additional) await _resolverCache.Add(rr); 
+
+        return msg;
     }
     
     /// <summary>
@@ -92,5 +174,12 @@ public class DnsResolver
         public static readonly long L = ((long)199 << 0) | ((long)7 << 8)   | ((long)83 << 16)  | ((long)42 << 24);
         public static readonly long M = ((long)202 << 0) | ((long)12 << 8)  | ((long)27 << 16)  | ((long)33 << 24);
     }
-    
+
+    public void Dispose()
+    {
+        _udp.Dispose();
+        
+        // should our resolver own its cache? -> create cache from factory?
+        // _resolverCache.Dispose();
+    }
 }

@@ -4,21 +4,28 @@ namespace Bogers.DnsMonitor.Dns;
 
 // todo: cache in memory -> flush to sqlite cache
 
+
+
 /// <summary>
 /// SQLite based cache implementation
 /// </summary>
-class SqliteResolverCache
+class SqliteResolverCache : IDisposable
 {
-    private static string ConnectionString = """Data Source=D:\Data\dnscache.db; Pooling=True""";
+    private readonly SqliteConnection _connection;
+
+    public SqliteResolverCache(string connectionString = "Data Source=:memory:; Pooling=True")
+    {
+        // since we're using a memory database, prevent it from being disposed by simply keeping a reference to it
+        _connection = new SqliteConnection(connectionString);
+        _connection.Open();
+    }
 
     /// <summary>
     /// Initialize the SQLite cache, ensuring the necessary tables etc. are created
     /// </summary>
-    public static async Task Initialize()
+    public void Initialize()
     {
-        await using var con = CreateConnection();
-        await con.OpenAsync();
-        await using var cmd = con.CreateCommand();
+        using var cmd = _connection.CreateCommand();
 
         cmd.CommandText = """
                               CREATE TABLE IF NOT EXISTS resource_records (
@@ -35,24 +42,22 @@ class SqliteResolverCache
                               CREATE INDEX IF NOT EXISTS resource_records_name_type_expires_created ON resource_records (name, type, expires, created);
                           """;
 
-        await cmd.ExecuteNonQueryAsync();
+        cmd.ExecuteNonQuery();
     }
         
     /// <summary>
     /// Add a resource record to the cache
     /// </summary>
     /// <param name="record">Record to cache</param>
-    public static async Task Add(ResourceRecord record)
+    public async Task Add(ResourceRecord record)
     {
-        await using var con = CreateConnection();
-        await con.OpenAsync();
-        await using var cmd = con.CreateCommand();
+        await using var cmd = _connection.CreateCommand();
 
         // only add if previous record was expired
         cmd.CommandText = """
                               INSERT INTO resource_records (name, type, class, ttl, expires, data)
                               select @name, @type, @class, @tll, @expires, @data
-                              WHERE NOT EXISTS (SELECT 1 from resource_records WHERE name = @name AND type = @type AND expires < CURRENT_TIMESTAMP)
+                              WHERE NOT EXISTS (SELECT 1 from resource_records WHERE name = @name AND type = @type AND CURRENT_TIMESTAMP < expires)
                           """;
 
         cmd.Parameters.Add("@name", SqliteType.Text).Value = record.Name;
@@ -71,7 +76,7 @@ class SqliteResolverCache
     /// <param name="name">Domain name</param>
     /// <param name="type">Record type <see cref="RecordType"/></param>
     /// <returns>Resource record when found</returns>
-    public static async Task<ResourceRecord?> FindFirst(string name, ushort type)
+    public async Task<ResourceRecord?> FindFirst(string name, ushort type)
     {
         var records = await FindAll(name, type);
         return records.FirstOrDefault();
@@ -83,11 +88,9 @@ class SqliteResolverCache
     /// <param name="name">Domain name</param>
     /// <param name="type">Record type <see cref="RecordType"/></param>
     /// <returns>All matching resource records</returns>
-    public static async Task<ResourceRecord[]> FindAll(string name, ushort type)
+    public async Task<ResourceRecord[]> FindAll(string name, ushort type)
     {
-        await using var con = CreateConnection();
-        await con.OpenAsync();
-        await using var cmd = con.CreateCommand();
+        await using var cmd = _connection.CreateCommand();
 
         // depending on type, one or more entries may be present for any given given name + type combination
         cmd.CommandText = """
@@ -121,16 +124,14 @@ class SqliteResolverCache
     /// <summary>
     /// Expunge expired records from the DB
     /// </summary>
-    public static async Task Clean()
+    public async Task ExpungeExpired()
     {
-        await using var con = CreateConnection();
-        await con.OpenAsync();
-        await using var cmd = con.CreateCommand();
+        await using var cmd = _connection.CreateCommand();
 
         cmd.CommandText = """DELETE FROM resource_records WHERE CURRENT_TIMESTAMP > expires;""";
 
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private static SqliteConnection CreateConnection() => new SqliteConnection(ConnectionString);
+    public void Dispose() => _connection.Dispose();
 }
