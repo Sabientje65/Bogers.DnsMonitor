@@ -9,26 +9,17 @@ class DnsResolver : IDisposable
     private readonly SqliteResolverCache _resolverCache;
 
     public DnsResolver(SqliteResolverCache resolverCache) => _resolverCache = resolverCache;
-
-    /// <summary>
-    /// Resolve the IPV4 address asociated with the given domain name
-    /// </summary>
-    /// <param name="name">Domain name</param>
-    /// <returns>IPV4 or null when resolution failed</returns>
-    public async Task<string?> ResolveIPV4(string name)
-    {
-        // start of by normalizing our hostname
-        if (!name.EndsWith('.')) name += '.';
-        return await QueryARecord(name);
-    }
     
     /// <summary>
     /// Resolve the IPV4 address associated with the given domain name
     /// </summary>
     /// <param name="name">Domain name</param>
-    /// <returns>When found, IPV4 address associated with the given domain</returns>
-    private async Task<string?> QueryARecord(string name)
+    /// <returns>IPV4 for the given domain or null when resolution failed</returns>
+    public async Task<string?> ResolveIPV4(string name)
     {
+        // start of by normalizing our hostname
+        if (!name.EndsWith('.')) name += '.';
+        
         // follow cname to actual name
         var cname = await _resolverCache.FindFirst(name, RecordType.CNAME);
         if (cname != null) name = cname.Data;
@@ -37,10 +28,10 @@ class DnsResolver : IDisposable
         if (answer != null) return answer.Data;
 
         var ns = await ResolveNS(name);
-        var result = await QueryARecord(name, ns);
+        var result = await ResolveIPV4(name, ns);
         
         // assuming we got our ns from cache... try one last time starting from a root server
-        if (String.IsNullOrEmpty(result)) result = await QueryARecord(name, new IPAddress(RootNameServer.A));
+        if (String.IsNullOrEmpty(result)) result = await ResolveIPV4(name, new IPAddress(RootNameServer.A));
 
         return result;
     }
@@ -51,7 +42,7 @@ class DnsResolver : IDisposable
     /// <param name="name">Domain name</param>
     /// <param name="ns">Nameserver to use as starting point</param>
     /// <returns>When found, IPV4 address associated with the given domain</returns>
-    private async Task<string?> QueryARecord(string name, IPAddress ns)
+    private async Task<string?> ResolveIPV4(string name, IPAddress ns)
     {
         var response = await QueryRemote(ns, new Question(name, RecordType.A)); 
         var answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
@@ -68,11 +59,11 @@ class DnsResolver : IDisposable
             if (glueData == null)
             {
                 var glueNS = await ResolveNS(nsRecord.Data);
-                glueData = await QueryARecord(nsRecord.Data, glueNS);
+                glueData = await ResolveIPV4(nsRecord.Data, glueNS);
                 if (glueData == null) continue;
             }
 
-            var glueResponse = await QueryARecord(name, IPAddress.Parse(glueData));
+            var glueResponse = await ResolveIPV4(name, IPAddress.Parse(glueData));
             if (!String.IsNullOrEmpty(glueResponse)) return glueResponse;
         }
 
@@ -100,7 +91,7 @@ class DnsResolver : IDisposable
             if (nsARecord != null) return IPAddress.Parse(nsARecord.Data);
                 
             // we do know our ns, just not its ip, take slow path -> full lookup
-            var nsIP = await QueryARecord(nsRecord.Data);
+            var nsIP = await ResolveIPV4(nsRecord.Data);
             if (!String.IsNullOrEmpty(nsIP)) return IPAddress.Parse(nsIP);
         }
 

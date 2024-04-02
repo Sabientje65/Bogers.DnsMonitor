@@ -249,12 +249,12 @@ static class MessageSerializer
                 break;
             case RecordType.A:
             case RecordType.AAAA:
-                SerializeIp(resourceRecord.Data, buffer, ref idx);
+                SerializeIP(resourceRecord.Data, buffer, ref idx);
                 break;
         }
     }
 
-    private static void SerializeIp(string ip, byte[] buffer, ref int idx)
+    private static void SerializeIP(string ip, byte[] buffer, ref int idx)
     {
         var bytes = IPAddress.Parse(ip).GetAddressBytes();
         bytes.CopyTo(buffer, idx);

@@ -1,6 +1,14 @@
 using Bogers.DnsMonitor.Dns;
+using Bogers.DnsMonitor.Transip;
+using Microsoft.Extensions.Logging.Console;
 
 var builder = Host.CreateApplicationBuilder();
+
+builder.Logging.AddSimpleConsole(opts => {
+    opts.SingleLine = true;
+    opts.ColorBehavior = LoggerColorBehavior.Enabled;
+    opts.TimestampFormat = "[yyyy-MM-dd hh:mm:ss]";
+});
 
 builder.Services
     .AddSingleton<SqliteResolverCache>(_ =>
@@ -13,7 +21,15 @@ builder.Services
         resolverCache.Initialize();
         return resolverCache;
     })
-    .AddSingleton<DnsResolver>();
+    .AddSingleton<DnsResolver>()
+    .AddSingleton<TransipClient>()
+    .AddHttpClient();
 
-var result = await builder.Build().Services.GetService<DnsResolver>().ResolveIPV4("chapoco.bogers.online");
-Console.WriteLine("Result: " + result);
+builder.Services.AddOptions<TransipConfiguration>()
+    .BindConfiguration("Transip");
+
+var host = builder.Build();
+await host.Services.GetRequiredService<TransipClient>().Send();
+
+// var result = await .Services.GetService<DnsResolver>().ResolveIPV4("chapoco.bogers.online");
+// Console.WriteLine("Result: " + result);
