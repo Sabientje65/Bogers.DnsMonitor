@@ -86,9 +86,6 @@ class DnsResolver : IDisposable
         {
             var nsRecord = await _resolverCache.FindFirst(domain, RecordType.NS);
             if (nsRecord == null) continue;
-
-            var nsARecord = await _resolverCache.FindFirst(nsRecord.Data, RecordType.A);
-            if (nsARecord != null) return IPAddress.Parse(nsARecord.Data);
                 
             // we do know our ns, just not its ip, take slow path -> full lookup
             var nsIP = await ResolveIPV4(nsRecord.Data);
