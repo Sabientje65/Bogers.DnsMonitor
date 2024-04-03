@@ -9,44 +9,49 @@ class DnsResolver : IDisposable
     private readonly SqliteResolverCache _resolverCache;
 
     public DnsResolver(SqliteResolverCache resolverCache) => _resolverCache = resolverCache;
-    
+
     /// <summary>
     /// Resolve the IPV4 address associated with the given domain name
     /// </summary>
     /// <param name="name">Domain name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>IPV4 for the given domain or null when resolution failed</returns>
-    public async Task<string?> ResolveIPV4(string name)
+    public async Task<string?> ResolveIPV4(string name, CancellationToken cancellationToken = default)
     {
         // start of by normalizing our hostname
         if (!name.EndsWith('.')) name += '.';
         
         // follow cname to actual name
-        var cname = await _resolverCache.FindFirst(name, RecordType.CNAME);
+        var cname = await _resolverCache.FindFirst(name, RecordType.CNAME, cancellationToken);
         if (cname != null) name = cname.Data;
         
-        var answer = await _resolverCache.FindFirst(name, RecordType.A);
+        var answer = await _resolverCache.FindFirst(name, RecordType.A, cancellationToken);
         if (answer != null) return answer.Data;
 
-        var ns = await ResolveNS(name);
-        var result = await ResolveIPV4(name, ns);
+        var ns = await ResolveNS(name, cancellationToken);
+        var result = await ResolveIPV4(name, ns, cancellationToken);
         
         // assuming we got our ns from cache... try one last time starting from a root server
-        if (String.IsNullOrEmpty(result)) result = await ResolveIPV4(name, new IPAddress(RootNameServer.A));
+        if (String.IsNullOrEmpty(result)) result = await ResolveIPV4(name, new IPAddress(RootNameServer.A), cancellationToken);
 
         return result;
     }
-    
+
     /// <summary>
     /// Resolve the IPV4 address associated with the given domain name using the given nameserver as starting point
     /// </summary>
     /// <param name="name">Domain name</param>
     /// <param name="ns">Nameserver to use as starting point</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>When found, IPV4 address associated with the given domain</returns>
-    private async Task<string?> ResolveIPV4(string name, IPAddress ns)
+    private async Task<string?> ResolveIPV4(string name, IPAddress ns, CancellationToken cancellationToken = default)
     {
-        var response = await QueryRemote(ns, new Question(name, RecordType.A)); 
-        var answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
-        if (answer != null) return answer.Data;
+        var response = await QueryRemote(ns, new Question(name, RecordType.A), cancellationToken);
+        var aAnswer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
+        if (aAnswer != null) return aAnswer.Data;
+        
+        var cnameAnswer = response.Answer.FirstOrDefault(x => x.Type == RecordType.CNAME);
+        if (cnameAnswer != null) return await ResolveIPV4(cnameAnswer.Data, cancellationToken);
             
         foreach (var nsRecord in response.Authority)
         {
@@ -58,7 +63,7 @@ class DnsResolver : IDisposable
             var glueData = glue?.Data;
             if (glueData == null)
             {
-                var glueNS = await ResolveNS(nsRecord.Data);
+                var glueNS = await ResolveNS(nsRecord.Data, cancellationToken);
                 glueData = await ResolveIPV4(nsRecord.Data, glueNS);
                 if (glueData == null) continue;
             }
@@ -69,13 +74,14 @@ class DnsResolver : IDisposable
 
         return null;
     }
-    
+
     /// <summary>
     /// Resolve the IP address of the NameServer server for the given <paramref name="name"/>
     /// </summary>
     /// <param name="name">Domain name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>NameServer IP address</returns>
-    private async Task<IPAddress> ResolveNS(string name)
+    private async Task<IPAddress> ResolveNS(string name, CancellationToken cancellationToken = default)
     {
         // first try searching for our specific domain
         var segments = name.Split('.');
@@ -84,11 +90,11 @@ class DnsResolver : IDisposable
 
         foreach (var domain in domains)
         {
-            var nsRecord = await _resolverCache.FindFirst(domain, RecordType.NS);
+            var nsRecord = await _resolverCache.FindFirst(domain, RecordType.NS, cancellationToken);
             if (nsRecord == null) continue;
                 
             // we do know our ns, just not its ip, take slow path -> full lookup
-            var nsIP = await ResolveIPV4(nsRecord.Data);
+            var nsIP = await ResolveIPV4(nsRecord.Data, cancellationToken);
             if (!String.IsNullOrEmpty(nsIP)) return IPAddress.Parse(nsIP);
         }
 
@@ -101,27 +107,31 @@ class DnsResolver : IDisposable
     /// Collection of pending query responses
     /// </summary>
     private readonly IDictionary<ushort, TaskCompletionSource<Message>> _pending = new Dictionary<ushort, TaskCompletionSource<Message>>();
-    
+
     /// <summary>
     /// Query the  <paramref name="remote"/> for the given <paramref name="question"/> 
     /// </summary>
     /// <param name="remote">Remote address</param>
     /// <param name="question">DNS question</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Answer message</returns>
-    private async Task<Message> QueryRemote(IPAddress remote, Question question)
+    private async Task<Message> QueryRemote(IPAddress remote, Question question, CancellationToken cancellationToken = default)
     {
         var ep = new IPEndPoint(remote, 53);
         var req = Message.Request(question);
         // byte[] responseBuffer;
 
-        Task<Message> myResponse;
-        lock (_pending) myResponse = (_pending[req.Header.Id] = new TaskCompletionSource<Message>()).Task;
+        var myResponseSource = new TaskCompletionSource<Message>();
+        cancellationToken.Register(() => myResponseSource.SetCanceled(cancellationToken));
+        
+        var myResponse = myResponseSource.Task;
+        lock (_pending) _pending[req.Header.Id] = myResponseSource;
             
-        await _udp.SendAsync(MessageSerializer.Serialize(req), ep);
+        await _udp.SendAsync(MessageSerializer.Serialize(req), ep, cancellationToken);
         
         // response is not guaranteed to be for our query, could also be for another query fired earlier on
         var responseMessage = MessageSerializer.Deserialize(
-            (await _udp.ReceiveAsync()).Buffer
+            (await _udp.ReceiveAsync(cancellationToken)).Buffer
         );
         
         lock (_pending)

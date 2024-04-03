@@ -49,7 +49,8 @@ class SqliteResolverCache : IDisposable
     /// Add a resource record to the cache
     /// </summary>
     /// <param name="record">Record to cache</param>
-    public async Task Add(ResourceRecord record)
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task Add(ResourceRecord record, CancellationToken cancellationToken = default)
     {
         await using var cmd = _connection.CreateCommand();
 
@@ -67,7 +68,7 @@ class SqliteResolverCache : IDisposable
         cmd.Parameters.Add("@expires", SqliteType.Integer).Value = DateTime.UtcNow.AddSeconds(record.TimeToLive);
         cmd.Parameters.Add("@data", SqliteType.Text).Value = record.Data;
 
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>
@@ -75,10 +76,11 @@ class SqliteResolverCache : IDisposable
     /// </summary>
     /// <param name="name">Domain name</param>
     /// <param name="type">Record type <see cref="RecordType"/></param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Resource record when found</returns>
-    public async Task<ResourceRecord?> FindFirst(string name, ushort type)
+    public async Task<ResourceRecord?> FindFirst(string name, ushort type, CancellationToken cancellationToken = default)
     {
-        var records = await FindAll(name, type);
+        var records = await FindAll(name, type, cancellationToken);
         return records.FirstOrDefault();
     }
 
@@ -87,8 +89,9 @@ class SqliteResolverCache : IDisposable
     /// </summary>
     /// <param name="name">Domain name</param>
     /// <param name="type">Record type <see cref="RecordType"/></param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>All matching resource records</returns>
-    public async Task<ResourceRecord[]> FindAll(string name, ushort type)
+    public async Task<ResourceRecord[]> FindAll(string name, ushort type, CancellationToken cancellationToken = default)
     {
         await using var cmd = _connection.CreateCommand();
 
@@ -105,9 +108,9 @@ class SqliteResolverCache : IDisposable
         cmd.Parameters.Add("@name", SqliteType.Text).Value = name;
         cmd.Parameters.Add("@type", SqliteType.Integer).Value = type;
 
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
         var result = new List<ResourceRecord>();
-        while (await reader.ReadAsync())
+        while (await reader.ReadAsync(cancellationToken))
         {
             result.Add(new ResourceRecord
             {
