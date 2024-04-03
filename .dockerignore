@@ -1,0 +1,14 @@
+﻿# program generated files
+.git
+.idea
+.dockerignore
+Dockerfile
+readme.txt
+
+# artifacts
+**/bin
+**/obj
+**/Properties
+
+# contains secrets
+**/.appsettings.json
