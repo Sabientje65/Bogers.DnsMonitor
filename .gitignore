@@ -4,3 +4,6 @@
 # Build artifacts
 bin/
 obj/
+
+# Contains secrets
+appsettings.json
