@@ -1,51 +1,106 @@
-﻿using Bogers.DnsMonitor.Dns;
-using Bogers.DnsMonitor.Pushover;
-using Microsoft.Extensions.Options;
+﻿using Bogers.DnsMonitor.Pushover;
+using Bogers.DnsMonitor.Transip;
 
 namespace Bogers.DnsMonitor.Monitoring;
 
-public class PublicIPService : IDisposable
-{
-    private readonly HttpClient _client;
-
-    public PublicIPService(IHttpClientFactory httpClientFactory)
-    {
-        _client = httpClientFactory.CreateClient("public-ip");
-        _client.BaseAddress = new Uri("https://api.ipify.org");
-    }
-
-    /// <summary>
-    /// Obtain the public IP address of the current device
-    /// </summary>
-    /// <returns>Current device's public IP</returns>
-    public async Task<string> MyIP() => await _client.GetStringAsync("/");
-
-    public void Dispose()
-    {
-        _client.Dispose();
-    }
-}
+// class DomainIPSource
+// {
+//     private readonly DnsResolver _dnsResolver;
+//     private readonly string _domain;
+//     
+//     public DomainIPSource(DnsResolver dnsResolver, string domain)
+//     {
+//         _dnsResolver = dnsResolver;
+//         _domain = domain;
+//     }
+//
+//     public async Task<string> CurrentIP() => (await _dnsResolver.ResolveIPV4(_domain))!;
+// }
+//
+// public class MyIPSource : IDisposable
+// {
+//     private readonly HttpClient _client;
+//
+//     public MyIPSource(IHttpClientFactory clientFactory)
+//     {
+//         _client = clientFactory.CreateClient("myip");
+//     }
+//
+//     public async Task<string> CurrentIP() => await _client.GetStringAsync("/");
+//     
+//     public void Dispose()
+//     {
+//         _client.Dispose();
+//     }
+// }
 
 public class MyPublicIPMonitor : TimedBackgroundService
 {
     private readonly IServiceProvider _services;
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    private const string MyDomain = "bogers.online";
+    private string _previous = "87.208.84.13";
     
     protected override TimeSpan Interval => TimeSpan.FromMinutes(1);
     
-    public MyPublicIPMonitor(ILogger<MyPublicIPMonitor> logger, IServiceProvider services) : base(logger)
+    public MyPublicIPMonitor(
+        ILogger<MyPublicIPMonitor> logger, 
+        IServiceProvider services, 
+        IHttpClientFactory httpClientFactory
+    ) : base(logger)
     {
         _services = services;
+        _httpClientFactory = httpClientFactory;
     }
 
-    protected override Task Run(CancellationToken stoppingToken)
+    protected override async Task Run(CancellationToken stoppingToken)
     {
         using var serviceScope = _services.CreateScope();
         var services = serviceScope.ServiceProvider;
+        
+        if (String.IsNullOrEmpty(_previous)) _previous = await ResolveMyCurrentPublicIP();
+        var current = await ResolveMyCurrentPublicIP();
+        
+        if (String.IsNullOrEmpty(current)) return;
+        if (current.Equals(_previous)) return;
 
         var pushover = services.GetRequiredService<PushoverClient>();
-        return Task.CompletedTask;
+        var transip = services.GetRequiredService<TransipClient>();
+        var myDnsEntries = await transip.GetEntries(MyDomain);
+        var myOutdatedDnsEntries = myDnsEntries
+            .Where(entry => entry.Content.Equals(_previous))
+            .ToArray();
+        
+        foreach (var dnsEntry in myOutdatedDnsEntries)
+        {
+            if (!dnsEntry.Content.Equals(_previous)) continue;
+            dnsEntry.Content = current;
+            await transip.UpdateEntry(MyDomain, dnsEntry);
+        }
+        
+        // todo: update traefik whitelist
+
+        await pushover.SendMessage(PushoverMessage.Text(
+            "Public IP changed",
+            $"IP Changed from {_previous} to {current}\nUpdated the following DNS entries for {MyDomain}\n\n{String.Join("\n\n", myOutdatedDnsEntries.Select(x => $"name: {x.Name}\ntype: {x.Type}"))}"
+        ));
+    }
+
+    private async Task<string> ResolveMyCurrentPublicIP()
+    {
+        using var client = _httpClientFactory.CreateClient("myip");
+        return await client.GetStringAsync("/");
     }
 }
+
+
+
+
+
+
+
+
 
 public class Monitor : TimedBackgroundService
 {

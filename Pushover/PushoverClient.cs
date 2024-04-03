@@ -30,8 +30,6 @@ public class PushoverClient : IDisposable
         _logger = logger;
         _client = httpClientFactory.CreateClient("pushover");
         _pushoverConfiguration = configuration.Value;
-        
-        _client.BaseAddress = new Uri("https://api.pushover.net");
     }
 
     /// <summary>

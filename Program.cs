@@ -1,4 +1,6 @@
 using Bogers.DnsMonitor.Dns;
+using Bogers.DnsMonitor.Monitoring;
+using Bogers.DnsMonitor.Pushover;
 using Bogers.DnsMonitor.Transip;
 using Microsoft.Extensions.Logging.Console;
 
@@ -22,14 +24,23 @@ builder.Services
         return resolverCache;
     })
     .AddSingleton<DnsResolver>()
-    .AddSingleton<TransipClient>()
-    .AddHttpClient();
+    .AddScoped<TransipClient>()
+    .AddSingleton<TransipAuthenticationService>()
+    .AddScoped<PushoverClient>();
+    
+builder.Services.AddHttpClient("pushover", client => client.BaseAddress = new Uri("https://api.pushover.net/"));
+builder.Services.AddHttpClient("transip", client => client.BaseAddress = new Uri("https://api.transip.nl/"));
+builder.Services.AddHttpClient("myip", client => client.BaseAddress = new Uri("https://api.ipify.org/"));
 
 builder.Services.AddOptions<TransipConfiguration>()
     .BindConfiguration("Transip");
 
-var host = builder.Build();
-await host.Services.GetRequiredService<TransipClient>().Send();
+builder.Services.AddOptions<PushoverConfiguration>()
+    .BindConfiguration("Pushover");
 
-// var result = await .Services.GetService<DnsResolver>().ResolveIPV4("chapoco.bogers.online");
-// Console.WriteLine("Result: " + result);
+builder.Services.AddHostedService<MyPublicIPMonitor>();
+
+var host = builder.Build();
+await host.RunAsync();
+
+// await host.Services.GetRequiredService<TransipClient>().GetEntries("bogers.online");

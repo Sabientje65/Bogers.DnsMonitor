@@ -1,141 +1,129 @@
-﻿using System.Net.Http.Headers;
+﻿using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Net.Http.Json;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Bogers.DnsMonitor.Pushover;
-using Microsoft.Extensions.Options;
 
 namespace Bogers.DnsMonitor.Transip;
 
 /// <summary>
 /// Service for communicating with transip api
 /// </summary>
-public class TransipClient
+public class TransipClient : IDisposable
 {
     private readonly ILogger _logger;
 
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly TransipConfiguration _transipConfiguration;
-
-    private AccessToken? _currentToken = new AccessToken();
+    private readonly HttpClient _httpClient;
+    private readonly TransipAuthenticationService _authenticationService;
     
-    public TransipClient(
-        ILogger<TransipClient> logger,
-        IHttpClientFactory httpClientFactory, 
-        IOptions<TransipConfiguration> configuration
-    )
+    private static readonly JsonSerializerOptions _transipJsonSerializerOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    
+    public TransipClient(ILogger<TransipClient> logger, IHttpClientFactory httpClientFactory, TransipAuthenticationService authenticationService)
     {
         _logger = logger;
-        _httpClientFactory = httpClientFactory;
-        _transipConfiguration = configuration.Value;
-        
-        
-        
-        // _client = httpClientFactory.CreateClient("transip");
-        // _client.BaseAddress = new Uri("https://api.transip.nl/v6");
+        _authenticationService = authenticationService;
+        _httpClient = httpClientFactory.CreateClient("transip");
     }
 
-    public async Task Send()
+    /// <summary>
+    /// Attempt to update the given DNS entry
+    /// </summary>
+    /// <param name="domain">Domain the entry belongs to</param>
+    /// <param name="entry">Updated entry</param>
+    public async Task UpdateEntry(string domain, DnsEntry entry)
     {
-        using var client = await CreateClient();
-    }
-    
-    // /// <summary>
-    // /// Send a notification via pushover
-    // /// </summary>
-    // /// <param name="message">Message to send</param>
-    // public async Task SendMessage(PushoverMessage message)
-    // {
-    //     // log message? trace invocation?
-    //     // if (!_transipConfiguration.Enabled) return;
-    //     //
-    //     // var payload = JsonSerializer.SerializeToNode(message);
-    //     // _logger.LogDebug("Sending message: {Payload}", payload);
-    //     //
-    //     // payload["token"] = _transipConfiguration.AppToken;
-    //     // payload["user"] = _transipConfiguration.UserToken;
-    //     //
-    //     // // todo: logging + error handling
-    //     // try
-    //     // {
-    //     //     ThrowIfConfigurationInvalid();
-    //     //     using var res = await _client.PostAsJsonAsync("/1/messages.json", payload);
-    //     //     res.EnsureSuccessStatusCode();
-    //     // }
-    //     // catch (Exception e)
-    //     // {
-    //     //     _logger.LogWarning(e, "Failed to send pushover message");
-    //     // }
-    // }
-
-    private void ThrowIfConfigurationInvalid()
-    {
-        if (String.IsNullOrEmpty(_transipConfiguration.PrivateKeyPath))
+        using var _ = await Send($"/v6/domains/{domain}/dns", msg =>
         {
-            throw new Exception("Invalid pushover configuration! Missing either AppToken, or UserToken");
-        }
-    }
-
-    private async Task<HttpClient> CreateClient()
-    {
-        var client = _httpClientFactory.CreateClient("transip");
-        // client.BaseAddress = new Uri("https://api.transip.nl/v6");
-        var currentToken = _currentToken;
-
-        await GenerateAccessToken();
-        
-        client.DefaultRequestHeaders.Add("Authorization", $"Bearer {currentToken.Value}");
-
-        return client;
-
-        async Task<AccessToken> GenerateAccessToken()
-        {
-            var body = JsonSerializer.Serialize(new
+            var entryJson = new JsonObject
             {
-                login = _transipConfiguration.Username,
-                nonce = Guid.NewGuid().ToString("N"),
-                read_only = false,
-                expiration_time = "30 minutes",
-                label = "Bogers.DnsMonitor",
-                global_key = true
-            });
-
-            // https://gathering.tweakers.net/forum/list_messages/2201582
-            var bodyBytes = Encoding.UTF8.GetBytes(body);
-            // var body2Bytes = Encoding.UTF8.GetBytes(body2);
-            var pemChars = Encoding.UTF8.GetChars(await File.ReadAllBytesAsync(_transipConfiguration.PrivateKeyPath));
-            using var rsa = new RSACryptoServiceProvider();
-            rsa.ImportFromPem(pemChars);
-            var signature = rsa.SignData(bodyBytes, HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1);
-            var signatureBase64 = Convert.ToBase64String(signature);
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.transip.nl/v6/auth");
-            // client.DefaultRequestHeaders.Clear();
-            request.Headers.Add("Signature", signatureBase64);
-            request.Content = new ByteArrayContent(bodyBytes);
-            request.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-
-            var response = await client.SendAsync(request);
-            var responseBody = await response.Content.ReadFromJsonAsync<JsonNode>();
-
-            return new AccessToken();
-
-            // var pk = File.ReadAllText(_transipConfiguration.PrivateKeyPath);
-
-            // rsa.ImportFromPem(Encoding.UTF8.GetChars(pemChars));
-            //
-            // rsa.SignData("abc")
-
-        }
+                { "dnsEntry", JsonSerializer.SerializeToNode(entry, _transipJsonSerializerOptions) }
+            }.ToString();
+            
+            msg.Method = HttpMethod.Patch;
+            msg.Content = new StringContent(entryJson, Encoding.UTF8, "application/json");
+        });
     }
 
-    class AccessToken
+    /// <summary>
+    /// Get all entries for the given domain
+    /// </summary>
+    /// <param name="domain">Domain</param>
+    /// <returns>Array of entries</returns>
+    public async Task<DnsEntry[]> GetEntries(string domain)
     {
-        public string Value { get; set; }
+        using var response = await Send($"/v6/domains/{domain}/dns");
+        var responseJson = await response.Content.ReadFromJsonAsync<JsonNode>();
+
+        return responseJson["dnsEntries"]
+            .AsArray()
+            .Deserialize<DnsEntry[]>(_transipJsonSerializerOptions);
+    }
+
+    /// <summary>
+    /// Send an authenticated request to the given Uri, will retry once in case of authentication failure
+    /// </summary>
+    /// <param name="uri">Uri of the endpoint to send request to</param>
+    /// <param name="configureMessage">Optional configurator for adding a payload, headers, etc.</param>
+    /// <returns>Response</returns>
+    private async Task<HttpResponseMessage> Send(
+        [StringSyntax(StringSyntaxAttribute.Uri)] string uri,
+        Action<HttpRequestMessage>? configureMessage = null
+    )
+    {
+        // noop, just send a request to the given url
+        configureMessage ??= _ => { };
         
-        public bool IsUsable { get; }
+        using var msg = await _authenticationService.CreateMessage();
+        msg.RequestUri = new Uri(uri, UriKind.RelativeOrAbsolute);
+        
+        configureMessage(msg);
+            
+        var res = await _httpClient.SendAsync(msg);
+        if (res.IsSuccessStatusCode) return res;
+
+        if (res.StatusCode != HttpStatusCode.Unauthorized)
+        {
+            res.EnsureSuccessStatusCode();
+            res.Dispose();
+        }
+        
+        // assume we just became unauthorized, try again
+        using var msg2 = await _authenticationService.CreateMessage(true);
+        msg2.RequestUri = new Uri(uri, UriKind.RelativeOrAbsolute);
+        
+        configureMessage(msg2);
+        
+        res = await _httpClient.SendAsync(msg2);
+        res.EnsureSuccessStatusCode();
+        return res;
     }
     
+    public void Dispose() => _httpClient.Dispose();
+}
+
+/// <summary>
+/// Single DNS entry in TransIP format
+/// </summary>
+public class DnsEntry
+{
+    /// <summary>
+    /// Entry name
+    /// </summary>
+    public string Name { get; set; }
+
+    /// <summary>
+    /// Entry TTL
+    /// </summary>
+    public int Expire { get; set; }
+
+    /// <summary>
+    /// Entry typename
+    /// </summary>
+    public string Type { get; set; }
+
+    /// <summary>
+    /// Entry data
+    /// </summary>
+    public string Content { get; set; }
 }
