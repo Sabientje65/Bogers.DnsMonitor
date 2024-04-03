@@ -66,7 +66,7 @@ public class TransipAuthenticationService
         
         if (!forceRefresh && !_currentToken.IsExpired)
         {
-            _logger.LogDebug("Authenticating request with transip access token");
+            _logger.LogDebug("Authenticating request with transip access token, current suffix: {LabelSuffix}", _labelSuffix);
             
             msg.Headers.Add("Authorization", $"Bearer {_currentToken.Value}");
             return msg;
@@ -123,7 +123,7 @@ public class TransipAuthenticationService
 
         _currentToken = new AccessToken(jwt, expiresDate);
         
-        _logger.LogInformation("Authenticating request with new transip token");
+        _logger.LogInformation("Authenticating request with new transip token, current suffix: {LabelSuffix}", _labelSuffix);
         msg.Headers.Add("Authorization", $"Bearer {_currentToken.Value}");
         
         return msg;
