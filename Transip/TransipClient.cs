@@ -50,7 +50,7 @@ public class TransipClient : IDisposable
     /// </summary>
     /// <param name="domain">Domain</param>
     /// <returns>Array of entries</returns>
-    public async Task<DnsEntry[]> GetEntries(string domain)
+    public async Task<DnsEntry[]> GetDnsEntries(string domain)
     {
         using var response = await Send($"/v6/domains/{domain}/dns");
         var responseJson = await response.Content.ReadFromJsonAsync<JsonNode>();

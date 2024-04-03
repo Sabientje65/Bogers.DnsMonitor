@@ -38,7 +38,7 @@ builder.Services.AddOptions<TransipConfiguration>()
 builder.Services.AddOptions<PushoverConfiguration>()
     .BindConfiguration("Pushover");
 
-builder.Services.AddHostedService<MyPublicIPMonitor>();
+builder.Services.AddHostedService<MyDomainIPMonitorService>();
 
 var host = builder.Build();
 await host.RunAsync();

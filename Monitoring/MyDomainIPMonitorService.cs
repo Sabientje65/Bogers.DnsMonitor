@@ -34,22 +34,30 @@ namespace Bogers.DnsMonitor.Monitoring;
 //     }
 // }
 
-public class MyPublicIPMonitor : TimedBackgroundService
+
+/// <summary>
+/// Service monitoring current networks public IP, notifying, propagating to DNS provider, etc. when a change occurs
+/// </summary>
+public class MyDomainIPMonitorService : TimedBackgroundService
 {
+    private readonly ILogger _logger;
+    
     private readonly IServiceProvider _services;
     private readonly IHttpClientFactory _httpClientFactory;
 
     private const string MyDomain = "bogers.online";
-    private string _previous = "87.208.84.13";
+    private string _previous = String.Empty;
     
     protected override TimeSpan Interval => TimeSpan.FromMinutes(1);
     
-    public MyPublicIPMonitor(
-        ILogger<MyPublicIPMonitor> logger, 
+    public MyDomainIPMonitorService(
+        ILogger<MyDomainIPMonitorService> logger, 
         IServiceProvider services, 
         IHttpClientFactory httpClientFactory
     ) : base(logger)
     {
+        _logger = logger;
+        
         _services = services;
         _httpClientFactory = httpClientFactory;
     }
@@ -58,36 +66,79 @@ public class MyPublicIPMonitor : TimedBackgroundService
     {
         using var serviceScope = _services.CreateScope();
         var services = serviceScope.ServiceProvider;
-        
-        if (String.IsNullOrEmpty(_previous)) _previous = await ResolveMyCurrentPublicIP();
-        var current = await ResolveMyCurrentPublicIP();
-        
-        if (String.IsNullOrEmpty(current)) return;
-        if (current.Equals(_previous)) return;
 
         var pushover = services.GetRequiredService<PushoverClient>();
         var transip = services.GetRequiredService<TransipClient>();
-        var myDnsEntries = await transip.GetEntries(MyDomain);
+
+        if (String.IsNullOrEmpty(_previous))
+        {
+            _previous = await GetInitialIPFromTransip(transip);
+            _logger.LogInformation("Initial IP set to {IP}", _previous);
+        }
+        
+        var current = await GetMyCurrentPublicIP();
+        _logger.LogDebug("Current IP is: {IP}", current);
+
+        if (String.IsNullOrEmpty(current))
+        {
+            _logger.LogWarning("Failed to resolve current IP");
+            return;
+        }
+        
+        if (current.Equals(_previous)) return;
+
+        _logger.LogInformation("IP changed from {PreviousIP} to {NewIP}, updating DNS records for {MyDomain} in Transip", _previous, current, MyDomain);
+
+        var myDnsEntries = await transip.GetDnsEntries(MyDomain);
         var myOutdatedDnsEntries = myDnsEntries
             .Where(entry => entry.Content.Equals(_previous))
             .ToArray();
         
+        // In case of failure, inform prior to performing individual updates, can screw ourselves over in case of a server reboot or w/e mid processing
+        // maybe process A record with MyDomain name last?
+        await pushover.SendMessage(PushoverMessage.Text(
+            "Public IP changed",
+            $"IP Changed from {_previous} to {current}\nUpdating the following DNS entries for {MyDomain}\n\n{String.Join("\n\n", myOutdatedDnsEntries.Select(x => $"name: {x.Name}\ntype: {x.Type}"))}"
+        ));
+        
         foreach (var dnsEntry in myOutdatedDnsEntries)
         {
             if (!dnsEntry.Content.Equals(_previous)) continue;
+            
+            _logger.LogInformation("Changing content for domain {MyDomain} DNS record with name {Name} and type {Type} to {NewIP}", MyDomain, dnsEntry.Name, dnsEntry.Type, current);
             dnsEntry.Content = current;
             await transip.UpdateEntry(MyDomain, dnsEntry);
         }
+
+        _previous = current;
         
         // todo: update traefik whitelist
-
-        await pushover.SendMessage(PushoverMessage.Text(
-            "Public IP changed",
-            $"IP Changed from {_previous} to {current}\nUpdated the following DNS entries for {MyDomain}\n\n{String.Join("\n\n", myOutdatedDnsEntries.Select(x => $"name: {x.Name}\ntype: {x.Type}"))}"
-        ));
     }
 
-    private async Task<string> ResolveMyCurrentPublicIP()
+    /// <summary>
+    /// Read my current IP from transips A record associated with my domain for use as a starting point for monitoring
+    /// </summary>
+    /// <param name="transip">Transip client</param>
+    /// <returns>My current IP</returns>
+    private async Task<string> GetInitialIPFromTransip(TransipClient transip)
+    {
+        _logger.LogDebug("Attempting to resolve initial IP for {MyDomain}", MyDomain);
+        
+        // we're going to assume we have an A record for our domain matching our domain name
+        var myDomainEntries = await transip.GetDnsEntries(MyDomain);
+        return myDomainEntries
+            .SingleOrDefault(e => 
+                e.Type.Equals("A", StringComparison.OrdinalIgnoreCase) && 
+                e.Name.Equals(MyDomain, StringComparison.OrdinalIgnoreCase)
+            )!
+            .Content;
+    }
+
+    /// <summary>
+    /// Get my current public IP address echoed back by an external service
+    /// </summary>
+    /// <returns>My public IP</returns>
+    private async Task<string> GetMyCurrentPublicIP()
     {
         using var client = _httpClientFactory.CreateClient("myip");
         return await client.GetStringAsync("/");

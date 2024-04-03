@@ -11,7 +11,7 @@ namespace Bogers.DnsMonitor.Dns;
 /// </summary>
 class SqliteResolverCache : IDisposable
 {
-    private readonly SqliteConnection _connection;
+    private readonly SqliteConnection _connection; // <-- make this its own service? -> shared db
 
     public SqliteResolverCache(string connectionString = "Data Source=:memory:; Pooling=True")
     {
