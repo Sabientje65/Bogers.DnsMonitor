@@ -12,6 +12,8 @@ namespace Bogers.DnsMonitor.Transip;
 /// </summary>
 public class TransipAuthenticationService
 {
+    private readonly ILogger<TransipAuthenticationService> _logger;
+    
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly TransipConfiguration _configuration;
     
@@ -26,11 +28,13 @@ public class TransipAuthenticationService
     private AccessToken _currentToken = AccessToken.Expired;
 
     public TransipAuthenticationService(
+        ILogger<TransipAuthenticationService> logger,
         IHttpClientFactory httpClientFactory,
         IOptions<TransipConfiguration> configuration
     )
     {
         _httpClientFactory = httpClientFactory;
+        _logger = logger;
         _configuration = configuration.Value;
     }
     
@@ -52,6 +56,8 @@ public class TransipAuthenticationService
     {
         if (forceRefresh)
         {
+            _logger.LogInformation("Forcefully discarding previous transip access token");
+            
             _labelSuffix = DateTime.UtcNow.ToString("hhmmss");
             
             // attempt to remove previous header
@@ -60,9 +66,13 @@ public class TransipAuthenticationService
         
         if (!forceRefresh && !_currentToken.IsExpired)
         {
+            _logger.LogDebug("Authenticating request with transip access token");
+            
             msg.Headers.Add("Authorization", $"Bearer {_currentToken.Value}");
             return msg;
         }
+        
+        _logger.LogInformation("Attempting to retrieve new transip access token, current suffix: {LabelSuffix}", _labelSuffix);
 
         using var client = _httpClientFactory.CreateClient("transip");
         
@@ -112,6 +122,8 @@ public class TransipAuthenticationService
         var expiresDate = DateTime.UnixEpoch.AddSeconds(expiresTimestamp);
 
         _currentToken = new AccessToken(jwt, expiresDate);
+        
+        _logger.LogInformation("Authenticating request with new transip token");
         msg.Headers.Add("Authorization", $"Bearer {_currentToken.Value}");
         
         return msg;
