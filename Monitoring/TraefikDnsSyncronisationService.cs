@@ -63,6 +63,7 @@ public class TraefikDnsSynchronisationService : TimedBackgroundService
         _logger.LogDebug("Found {HostCount} CNAME records for {Domain} in transip", currentCnames.Length, Domain);
         
         var newHosts = enabledHosts
+            .Where(x => !x.Equals(Domain, StringComparison.OrdinalIgnoreCase)) // ignore root domain
             .Select(h => h.Replace($".{Domain}", String.Empty, StringComparison.OrdinalIgnoreCase))
             .Except(currentCnames, StringComparer.OrdinalIgnoreCase)
             .ToArray();
