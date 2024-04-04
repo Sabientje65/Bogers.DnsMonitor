@@ -31,7 +31,7 @@ public class TransipClient : IDisposable
     /// </summary>
     /// <param name="domain">Domain the entry belongs to</param>
     /// <param name="entry">Updated entry</param>
-    public async Task UpdateEntry(string domain, DnsEntry entry)
+    public async Task UpdateDnsEntry(string domain, DnsEntry entry)
     {
         using var _ = await Send($"/v6/domains/{domain}/dns", msg =>
         {
@@ -44,11 +44,31 @@ public class TransipClient : IDisposable
             msg.Content = new StringContent(entryJson, Encoding.UTF8, "application/json");
         });
     }
+    
+    /// <summary>
+    /// Create a DNS entry in TransIP for the given domain
+    /// </summary>
+    /// <param name="domain">Domain to create entry for</param>
+    /// <param name="entry">Entry to create</param>
+    public async Task CreateDnsEntry(string domain, DnsEntry entry)
+    {
+        using var response = await Send($"/v6/domains/{domain}/dns", msg =>
+        {
+            var entryJson = new JsonObject
+            {
+                { "dnsEntry", JsonSerializer.SerializeToNode(entry, _transipJsonSerializerOptions) }
+            }.ToString();
+
+            msg.Method = HttpMethod.Post;
+            msg.Content = new StringContent(entryJson);
+        });
+    }
+
 
     /// <summary>
     /// Get all entries for the given domain
     /// </summary>
-    /// <param name="domain">Domain</param>
+    /// <param name="domain">Domain to get entries for</param>
     /// <returns>Array of entries</returns>
     public async Task<DnsEntry[]> GetDnsEntries(string domain)
     {
@@ -59,7 +79,7 @@ public class TransipClient : IDisposable
             .AsArray()
             .Deserialize<DnsEntry[]>(_transipJsonSerializerOptions);
     }
-
+    
     /// <summary>
     /// Send an authenticated request to the given Uri, will retry once in case of authentication failure
     /// </summary>
@@ -110,20 +130,20 @@ public class DnsEntry
     /// <summary>
     /// Entry name
     /// </summary>
-    public string Name { get; set; }
-
-    /// <summary>
-    /// Entry TTL
-    /// </summary>
-    public int Expire { get; set; }
+    public required string Name { get; init; }
 
     /// <summary>
     /// Entry typename
     /// </summary>
-    public string Type { get; set; }
+    public required string Type { get; init; }
+    
+    /// <summary>
+    /// Entry TTL
+    /// </summary>
+    public required int Expire { get; set; }
 
     /// <summary>
     /// Entry data
     /// </summary>
-    public string Content { get; set; }
+    public required string Content { get; set; }
 }

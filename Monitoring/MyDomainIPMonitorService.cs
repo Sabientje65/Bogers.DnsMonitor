@@ -12,9 +12,9 @@ public class MyDomainIPMonitorService : TimedBackgroundService
     
     private readonly IServiceProvider _services;
     private readonly IHttpClientFactory _httpClientFactory;
-
-    private const string MyDomain = "bogers.online";
     private string _previous = String.Empty;
+    
+    public required string Domain { get; init; }
     
     protected override TimeSpan Interval => TimeSpan.FromMinutes(1);
     
@@ -30,6 +30,16 @@ public class MyDomainIPMonitorService : TimedBackgroundService
         _httpClientFactory = httpClientFactory;
     }
 
+    protected override async Task Initialize(CancellationToken stoppingToken)
+    {
+        using var serviceScope = _services.CreateScope();
+        var services = serviceScope.ServiceProvider;
+        
+        var transip = services.GetRequiredService<TransipClient>();
+        _previous = await GetInitialIPFromTransip(transip);
+        _logger.LogInformation("Initial IP set to {IP}", _previous);
+    }
+
     protected override async Task Run(CancellationToken stoppingToken)
     {
         using var serviceScope = _services.CreateScope();
@@ -37,12 +47,6 @@ public class MyDomainIPMonitorService : TimedBackgroundService
 
         var pushover = services.GetRequiredService<PushoverClient>();
         var transip = services.GetRequiredService<TransipClient>();
-
-        if (String.IsNullOrEmpty(_previous))
-        {
-            _previous = await GetInitialIPFromTransip(transip);
-            _logger.LogInformation("Initial IP set to {IP}", _previous);
-        }
         
         var current = await GetMyCurrentPublicIP();
         _logger.LogDebug("Current IP is: {IP}", current);
@@ -55,9 +59,9 @@ public class MyDomainIPMonitorService : TimedBackgroundService
         
         if (current.Equals(_previous)) return;
 
-        _logger.LogInformation("IP changed from {PreviousIP} to {NewIP}, updating DNS records for {MyDomain} in Transip", _previous, current, MyDomain);
+        _logger.LogInformation("IP changed from {PreviousIP} to {NewIP}, updating DNS records for {MyDomain} in Transip", _previous, current, Domain);
 
-        var myDnsEntries = await transip.GetDnsEntries(MyDomain);
+        var myDnsEntries = await transip.GetDnsEntries(Domain);
         var myOutdatedDnsEntries = myDnsEntries
             .Where(entry => entry.Content.Equals(_previous))
             .ToArray();
@@ -66,19 +70,19 @@ public class MyDomainIPMonitorService : TimedBackgroundService
         // maybe process A record with MyDomain name last?
         await pushover.SendMessage(PushoverMessage.Text(
             "Public IP changed",
-            $"IP Changed from {_previous} to {current}\nUpdating the following DNS entries for {MyDomain}\n\n{String.Join("\n\n", myOutdatedDnsEntries.Select(x => $"name: {x.Name}\ntype: {x.Type}"))}"
+            $"IP Changed from {_previous} to {current}\nUpdating the following DNS entries for {Domain}\n\n{String.Join("\n\n", myOutdatedDnsEntries.Select(x => $"name: {x.Name}\ntype: {x.Type}"))}"
         ));
         
         foreach (var dnsEntry in myOutdatedDnsEntries)
         {
             if (!dnsEntry.Content.Equals(_previous)) continue;
             
-            _logger.LogInformation("Changing content for domain {MyDomain} DNS record with name {Name} and type {Type} to {NewIP}", MyDomain, dnsEntry.Name, dnsEntry.Type, current);
+            _logger.LogInformation("Changing content for domain {MyDomain} DNS record with name {Name} and type {Type} to {NewIP}", Domain, dnsEntry.Name, dnsEntry.Type, current);
             dnsEntry.Content = current;
-            await transip.UpdateEntry(MyDomain, dnsEntry);
+            await transip.UpdateDnsEntry(Domain, dnsEntry);
         }
         
-        foreach (var traefikConfigUpdater in services.GetServices<TraefikConfigUpdater>()) await traefikConfigUpdater.Write(MyDomain, current);
+        foreach (var traefikConfigUpdater in services.GetServices<TraefikConfigUpdater>()) await traefikConfigUpdater.Write(Domain, current);
 
         _previous = current;
         
@@ -92,14 +96,14 @@ public class MyDomainIPMonitorService : TimedBackgroundService
     /// <returns>My current IP</returns>
     private async Task<string> GetInitialIPFromTransip(TransipClient transip)
     {
-        _logger.LogDebug("Attempting to resolve initial IP for {MyDomain}", MyDomain);
+        _logger.LogDebug("Attempting to resolve initial IP for {MyDomain}", Domain);
         
         // we're going to assume we have an A record for our domain matching our domain name
-        var myDomainEntries = await transip.GetDnsEntries(MyDomain);
+        var myDomainEntries = await transip.GetDnsEntries(Domain);
         return myDomainEntries
             .SingleOrDefault(e => 
                 e.Type.Equals("A", StringComparison.OrdinalIgnoreCase) && 
-                e.Name.Equals(MyDomain, StringComparison.OrdinalIgnoreCase)
+                e.Name.Equals(Domain, StringComparison.OrdinalIgnoreCase)
             )!
             .Content;
     }

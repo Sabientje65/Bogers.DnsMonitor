@@ -1,6 +1,7 @@
 using Bogers.DnsMonitor.Dns;
 using Bogers.DnsMonitor.Monitoring;
 using Bogers.DnsMonitor.Pushover;
+using Bogers.DnsMonitor.Traefik;
 using Bogers.DnsMonitor.Transip;
 using Microsoft.Extensions.Logging.Console;
 
@@ -25,17 +26,18 @@ builder.Services
     })
     .AddSingleton<TraefikConfigUpdater>(services => new TraefikConfigUpdater(services.GetRequiredService<ILogger<TraefikConfigUpdater>>())
     {
-        // wanna have this working but also wanna go to bed xd
+        // todo: pull from env/config
         Path = "/data/traefik-whitelist.yml"
-        // Path = "D:\\Data\\traefik-whitelist.yml"
     })
     .AddSingleton<DnsResolver>()
     .AddScoped<TransipClient>()
     .AddSingleton<TransipAuthenticationService>()
-    .AddScoped<PushoverClient>();
+    .AddScoped<PushoverClient>()
+    .AddScoped<TraefikClient>();
     
 builder.Services.AddHttpClient("pushover", client => client.BaseAddress = new Uri("https://api.pushover.net/"));
 builder.Services.AddHttpClient("transip", client => client.BaseAddress = new Uri("https://api.transip.nl/"));
+builder.Services.AddHttpClient("traefik", client => client.BaseAddress = new Uri("https://traefik.bogers.online/"));
 builder.Services.AddHttpClient("myip", client => client.BaseAddress = new Uri("https://api.ipify.org/"));
 
 builder.Services.AddOptions<TransipConfiguration>()
@@ -44,7 +46,16 @@ builder.Services.AddOptions<TransipConfiguration>()
 builder.Services.AddOptions<PushoverConfiguration>()
     .BindConfiguration("Pushover");
 
-builder.Services.AddHostedService<MyDomainIPMonitorService>();
+builder.Services.AddHostedService<MyDomainIPMonitorService>(services => new MyDomainIPMonitorService(services.GetRequiredService<ILogger<MyDomainIPMonitorService>>(), services, services.GetRequiredService<IHttpClientFactory>())
+{
+    Domain = "bogers.online"
+});
+
+builder.Services.AddHostedService<TraefikDnsSynchronisationService>(services => new TraefikDnsSynchronisationService(services.GetRequiredService<ILogger<TraefikDnsSynchronisationService>>(), services)
+{
+    Domain = "bogers.online"
+});
+
 builder.Services.AddHostedService<ExternalDomainIPMonitorService>(services => new ExternalDomainIPMonitorService( services.GetRequiredService<ILogger<ExternalDomainIPMonitorService>>(), services) {
     // letsencrypt -> used for obtain certificates, *assumed* to never ever change :-)
     Domain = "acme-v02.api.letsencrypt.org"
@@ -52,5 +63,3 @@ builder.Services.AddHostedService<ExternalDomainIPMonitorService>(services => ne
 
 var host = builder.Build();
 await host.RunAsync();
-
-// await host.Services.GetRequiredService<TransipClient>().GetEntries("bogers.online");

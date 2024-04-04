@@ -47,11 +47,11 @@ class DnsResolver : IDisposable
     private async Task<string?> ResolveIPV4(string name, IPAddress ns, CancellationToken cancellationToken = default)
     {
         var response = await QueryRemote(ns, new Question(name, RecordType.A), cancellationToken);
-        var aAnswer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
-        if (aAnswer != null) return aAnswer.Data;
+        var answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.A);
+        if (answer != null) return answer.Data;
         
-        var cnameAnswer = response.Answer.FirstOrDefault(x => x.Type == RecordType.CNAME);
-        if (cnameAnswer != null) return await ResolveIPV4(cnameAnswer.Data, cancellationToken);
+        answer = response.Answer.FirstOrDefault(x => x.Type == RecordType.CNAME);
+        if (answer != null) return await ResolveIPV4(answer.Data, cancellationToken);
             
         foreach (var nsRecord in response.Authority)
         {

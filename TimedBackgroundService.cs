@@ -13,6 +13,25 @@ public abstract class TimedBackgroundService : BackgroundService
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        for (var tries = 0; tries < 3; tries++)
+        {
+            try
+            {
+                await Initialize(stoppingToken);
+                break;
+            }
+            catch (Exception e)
+            {
+                if (tries == 2)
+                {
+                    _logger.LogCritical(e, "Unhandled exception while attempting to initialize background service: {ServiceType}, failed to initialize after 3 tries, giving up...", GetType().FullName);
+                    throw;
+                }
+                
+                _logger.LogError(e, "Unhandled exception while attempting to initialize background service: {ServiceType}. Retrying...", GetType().FullName);
+            }
+        }
+        
         // autostart first run
         try
         {
@@ -40,4 +59,8 @@ public abstract class TimedBackgroundService : BackgroundService
     }
 
     protected abstract Task Run(CancellationToken stoppingToken);
+
+    protected virtual Task Initialize(CancellationToken stoppingToken) => Task.CompletedTask;
+
+    // virtual Task Initialize()? -> no more keeping track of initial run
 }
