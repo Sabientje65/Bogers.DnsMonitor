@@ -103,7 +103,7 @@ public class MyDomainIPMonitorService : TimedBackgroundService
         return myDomainEntries
             .SingleOrDefault(e => 
                 e.Type.Equals("A", StringComparison.OrdinalIgnoreCase) && 
-                e.Name.Equals(Domain, StringComparison.OrdinalIgnoreCase)
+                e.Name.Equals("@", StringComparison.OrdinalIgnoreCase)
             )!
             .Content;
     }
