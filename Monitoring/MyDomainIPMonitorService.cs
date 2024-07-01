@@ -96,7 +96,7 @@ public class MyDomainIPMonitorService : TimedBackgroundService
     /// <returns>My current IP</returns>
     private async Task<string> GetInitialIPFromTransip(TransipClient transip)
     {
-        _logger.LogDebug("Attempting to resolve initial IP for {MyDomain}", Domain);
+        _logger.LogInformation("Attempting to resolve initial IP for {MyDomain}", Domain);
         
         // we're going to assume we have an A record for our domain matching our domain name
         var myDomainEntries = await transip.GetDnsEntries(Domain);
