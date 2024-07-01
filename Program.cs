@@ -37,7 +37,7 @@ builder.Services
     
 builder.Services.AddHttpClient("pushover", client => client.BaseAddress = new Uri("https://api.pushover.net/"));
 builder.Services.AddHttpClient("transip", client => client.BaseAddress = new Uri("https://api.transip.nl/"));
-builder.Services.AddHttpClient("traefik", client => client.BaseAddress = new Uri("https://traefik.bogers.online/"));
+builder.Services.AddHttpClient("traefik", client => client.BaseAddress = new Uri("https://traefik.primagen.org/"));
 builder.Services.AddHttpClient("myip", client => client.BaseAddress = new Uri("https://api.ipify.org/"));
 
 builder.Services.AddOptions<TransipConfiguration>()
@@ -48,12 +48,12 @@ builder.Services.AddOptions<PushoverConfiguration>()
 
 builder.Services.AddHostedService<MyDomainIPMonitorService>(services => new MyDomainIPMonitorService(services.GetRequiredService<ILogger<MyDomainIPMonitorService>>(), services, services.GetRequiredService<IHttpClientFactory>())
 {
-    Domain = "bogers.online"
+    Domain = "primagen.org"
 });
 
 builder.Services.AddHostedService<TraefikDnsSynchronisationService>(services => new TraefikDnsSynchronisationService(services.GetRequiredService<ILogger<TraefikDnsSynchronisationService>>(), services)
 {
-    Domain = "bogers.online"
+    Domain = "primagen.org"
 });
 
 builder.Services.AddHostedService<ExternalDomainIPMonitorService>(services => new ExternalDomainIPMonitorService( services.GetRequiredService<ILogger<ExternalDomainIPMonitorService>>(), services) {
