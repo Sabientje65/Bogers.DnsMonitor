@@ -1,5 +1,5 @@
 ﻿FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-FROM mcr.microsoft.com/dotnet/runtime:8.0 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 
 FROM build AS build
 
@@ -14,4 +14,4 @@ FROM base
 WORKDIR /app
 COPY --from=build ./app .  
 
-ENTRYPOINT ["dotnet", "Bogers.DnsMonitor"]
+ENTRYPOINT ["dotnet", "Bogers.DnsMonitor.dll"]

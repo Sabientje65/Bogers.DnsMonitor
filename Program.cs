@@ -37,7 +37,7 @@ builder.Services
     
 builder.Services.AddHttpClient("pushover", client => client.BaseAddress = new Uri("https://api.pushover.net/"));
 builder.Services.AddHttpClient("transip", client => client.BaseAddress = new Uri("https://api.transip.nl/"));
-builder.Services.AddHttpClient("traefik", client => client.BaseAddress = new Uri("traefik")); // https://traefik.primagen.org/
+builder.Services.AddHttpClient("traefik", client => client.BaseAddress = new Uri("https://traefik.primagen.org/"));
 builder.Services.AddHttpClient("myip", client => client.BaseAddress = new Uri("https://api.ipify.org/"));
 
 builder.Services.AddOptions<TransipConfiguration>()
