@@ -83,7 +83,7 @@ public class TraefikDnsSynchronisationService : TimedBackgroundService
                 {
                     Name = newHost,
                     Type = "CNAME",
-                    Content = Domain,
+                    Content = "@",
                     Expire = ttl
                 };
                 
